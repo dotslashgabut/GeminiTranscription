@@ -14,11 +14,11 @@ const TRANSCRIPTION_SCHEMA = {
         properties: {
           startTime: {
             type: Type.STRING,
-            description: "The highly accurate timestamp when the segment starts, including milliseconds (e.g., '00:00:05.123'). Do not include units like 's'.",
+            description: "The timestamp when the segment starts. MUST follow format HH:MM:SS.mmm (e.g., '00:00:05.123'). Do not use colons for milliseconds.",
           },
           endTime: {
             type: Type.STRING,
-            description: "The highly accurate timestamp when the segment ends, including milliseconds (e.g., '00:00:08.456'). Do not include units like 's'.",
+            description: "The timestamp when the segment ends. MUST follow format HH:MM:SS.mmm (e.g., '00:00:08.456'). Do not use colons for milliseconds.",
           },
           text: {
             type: Type.STRING,
@@ -50,7 +50,7 @@ export async function transcribeAudio(
               },
             },
             {
-              text: "Transcribe the following audio file. Provide extremely detailed timestamps including milliseconds for every segment. Ensure the segments are in a clear chronological order. Output the result in JSON format only.",
+              text: "Transcribe this audio. Return a JSON object with 'segments'. Every segment MUST have 'startTime' and 'endTime' in EXACTLY HH:MM:SS.mmm format (e.g. 00:01:23.456). Accuracy is priority.",
             },
           ],
         },
@@ -84,10 +84,7 @@ export async function translateSegments(
         {
           parts: [
             {
-              text: `Translate the following transcription segments into ${targetLanguage}. 
-              Maintain the exact same high-precision timestamps (including milliseconds).
-              Return the data in the same JSON structure, but add a new 'translatedText' field to each object.
-              
+              text: `Translate these segments into ${targetLanguage}. Keep the exact HH:MM:SS.mmm timestamps.
               Data: ${JSON.stringify(segments)}`,
             },
           ],

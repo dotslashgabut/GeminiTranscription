@@ -14,29 +14,34 @@ const LANGUAGES = [
 
 /**
  * Robustly parses various timestamp formats into total seconds.
- * Normalizes differences between Gemini 2.5 (often seconds) and Gemini 3 (often HH:MM:SS).
+ * Fixes "jump" issues by correctly identifying HH:MM:SS.mmm vs MM:SS:mmm.
  */
 export const parseTimestamp = (timestamp: string | number): number => {
   if (timestamp === undefined || timestamp === null) return 0;
   
-  // Convert to string and clean up
   let str = timestamp.toString().trim().toLowerCase();
-  
-  // Remove 's' or other units
-  str = str.replace(/[ms]/g, '').replace(',', '.');
+  str = str.replace(/[ms]/g, '');
 
-  // Handle HH:MM:SS.mmm or MM:SS.mmm
   if (str.includes(':')) {
-    const parts = str.split(':').map(p => parseFloat(p) || 0);
+    const parts = str.split(/[:]/).map(p => parseFloat(p.replace(',', '.')) || 0);
+    
+    // Case 1: HH:MM:SS.mmm (3 parts, standard)
     if (parts.length === 3) {
+      // Heuristic check: If the 3rd part is >= 60, it's likely milliseconds mistaken as a part.
+      // e.g., 01:23:456 (1m 23s 456ms) instead of 00:01:23.456
+      if (parts[2] >= 60) {
+        return (parts[0] * 60) + parts[1] + (parts[2] / 1000);
+      }
       return (parts[0] * 3600) + (parts[1] * 60) + parts[2];
-    } else if (parts.length === 2) {
+    } 
+    // Case 2: MM:SS.mmm (2 parts)
+    else if (parts.length === 2) {
       return (parts[0] * 60) + parts[1];
     }
   }
 
-  // Handle pure seconds as float
-  return parseFloat(str) || 0;
+  // Handle pure seconds or other weird single-number formats
+  return parseFloat(str.replace(',', '.')) || 0;
 };
 
 const App: React.FC = () => {
@@ -187,7 +192,7 @@ const App: React.FC = () => {
     const segments = results[side].segments;
     if (segments.length === 0) return;
     const baseFileName = audioFile?.fileName.split('.').slice(0, -1).join('.') || 'audio';
-    const filename = `${baseFileName}_${results[side].modelName}.${format.toLowerCase()}`;
+    const filename = `${baseFileName}_${results[side].modelName}${type === 'translated' ? '_translated' : ''}.${format.toLowerCase()}`;
     const totalDuration = audioRef.current?.duration;
 
     let content = "";
@@ -207,12 +212,12 @@ const App: React.FC = () => {
   return (
     <div ref={appContainerRef} className="h-screen flex flex-col bg-slate-100 overflow-hidden font-sans">
       <header className="bg-white border-b border-slate-200 px-6 py-4 flex-shrink-0 z-30 shadow-sm">
-        <div className="max-w-[98%] mx-auto space-y-4">
+        <div className="max-w-full mx-auto space-y-4">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
               <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
                 <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-blue-600"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" x2="12" y1="19" y2="22" /></svg>
-                Gemini Audio Comparison
+                Gemini Audio comparison
               </h1>
             </div>
 
@@ -227,7 +232,7 @@ const App: React.FC = () => {
                 onClick={startTranscription}
                 className={`px-6 py-2 text-sm font-bold text-white rounded-xl shadow-lg transition-all ${!audioFile || isTranscribing ? 'bg-slate-300' : 'bg-blue-600 hover:bg-blue-700'}`}
               >
-                {isTranscribing ? 'Transcribing...' : 'Transcribe'}
+                {isTranscribing ? 'Processing...' : 'Transcribe'}
               </button>
 
               {hasResults && (
@@ -269,13 +274,13 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Container - Width set to full-ish for better visibility */}
       <div className="flex-1 overflow-hidden px-1 py-1 md:px-2 md:py-2 flex flex-col">
         <main className="flex-1 w-full max-w-full mx-auto bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden grid grid-cols-1 md:grid-cols-2 gap-px relative">
           {(['left', 'right'] as const).map((side) => {
             const activeIdx = activeIndices[side];
             const isLoading = results[side].loading;
             const isTranslatingLocal = results[side].translating;
+            const hasTranslated = results[side].segments.some(s => s.translatedText);
 
             return (
               <div key={side} className="flex flex-col h-full min-h-0 bg-white">
@@ -295,21 +300,37 @@ const App: React.FC = () => {
                     )}
                   </div>
                   {results[side].segments.length > 0 && (
-                    <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
-                      {['TXT', 'SRT', 'LRC', 'JSON'].map(format => (
-                        <button 
-                          key={format} 
-                          onClick={() => handleDownload(side, format, 'original')} 
-                          className="px-2 py-0.5 text-[9px] font-black border border-slate-200 rounded bg-white hover:bg-slate-50 text-slate-600 shadow-sm transition-all whitespace-nowrap"
-                        >
-                          {format}
-                        </button>
-                      ))}
+                    <div className="flex flex-col gap-1.5 overflow-hidden">
+                      <div className="flex items-center gap-2 overflow-x-auto pb-0.5 no-scrollbar">
+                        <span className="text-[8px] font-bold text-slate-400 uppercase min-w-[32px]">Orig:</span>
+                        {['TXT', 'SRT', 'LRC', 'JSON'].map(format => (
+                          <button 
+                            key={format} 
+                            onClick={() => handleDownload(side, format, 'original')} 
+                            className="px-2 py-0.5 text-[9px] font-black border border-slate-200 rounded bg-white hover:bg-slate-50 text-slate-600 shadow-sm transition-all whitespace-nowrap"
+                          >
+                            {format}
+                          </button>
+                        ))}
+                      </div>
+                      {hasTranslated && (
+                        <div className="flex items-center gap-2 overflow-x-auto pb-0.5 no-scrollbar">
+                          <span className="text-[8px] font-bold text-indigo-400 uppercase min-w-[32px]">Tran:</span>
+                          {['TXT', 'SRT', 'LRC', 'JSON'].map(format => (
+                            <button 
+                              key={format} 
+                              onClick={() => handleDownload(side, format, 'translated')} 
+                              className="px-2 py-0.5 text-[9px] font-black border border-indigo-100 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-600 shadow-sm transition-all whitespace-nowrap"
+                            >
+                              {format}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
 
-                {/* The scrollable area - Optimized to always occupy full height */}
                 <div className="flex-1 overflow-y-auto overflow-x-hidden relative bg-white scrolling-touch p-1 scroll-smooth min-h-0">
                   {isLoading ? (
                     <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-20 flex flex-col items-center justify-center p-8">
@@ -331,7 +352,7 @@ const App: React.FC = () => {
                   ) : (
                     <div className="h-full flex flex-col items-center justify-center p-8 text-center opacity-25">
                       <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg>
-                      <p className="mt-4 text-xs font-black uppercase tracking-widest">Ready</p>
+                      <p className="mt-4 text-xs font-black uppercase tracking-widest">Awaiting Audio</p>
                     </div>
                   )}
                 </div>
@@ -344,9 +365,9 @@ const App: React.FC = () => {
       <footer className="bg-white border-t border-slate-200 p-2 text-[10px] font-bold text-slate-400 flex-shrink-0">
         <div className="max-w-[98%] mx-auto flex justify-between items-center px-4">
           <div className="flex items-center gap-4">
-            <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded uppercase">Dual Engine</span>
+            <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded uppercase">Dual Engine Comparative Analysis</span>
           </div>
-          <div className="font-mono text-[9px]">TIME: {currentTime.toFixed(2)}s</div>
+          <div className="font-mono text-[9px] text-slate-500">PLAYHEAD: {currentTime.toFixed(3)}s</div>
         </div>
       </footer>
     </div>
