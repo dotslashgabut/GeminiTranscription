@@ -14,15 +14,15 @@ const TRANSCRIPTION_SCHEMA = {
         properties: {
           startTime: {
             type: Type.STRING,
-            description: "Timestamp mulai. Format: HH:MM:SS.mmm. Harus sangat presisi terhadap awal suara.",
+            description: "Timestamp mulai. WAJIB format HH:MM:SS.mmm (contoh: '00:00:01.234'). Jangan bulatkan.",
           },
           endTime: {
             type: Type.STRING,
-            description: "Timestamp akhir. Format: HH:MM:SS.mmm. Harus sangat presisi terhadap akhir suara.",
+            description: "Timestamp akhir. WAJIB format HH:MM:SS.mmm (contoh: '00:00:04.567').",
           },
           text: {
             type: Type.STRING,
-            description: "Teks hasil transkripsi.",
+            description: "Teks transkripsi.",
           },
         },
         required: ["startTime", "endTime", "text"],
@@ -32,6 +32,25 @@ const TRANSCRIPTION_SCHEMA = {
   required: ["segments"],
 };
 
+/**
+ * Ensures a timestamp string strictly follows HH:MM:SS.mmm
+ */
+function normalizeTimestamp(ts: string): string {
+  const parts = ts.split(':');
+  if (parts.length < 3) return ts; // Return as is if format is unrecognizable
+
+  let secondsPart = parts[2];
+  if (!secondsPart.includes('.')) {
+    // If milliseconds are missing, append .000
+    parts[2] = secondsPart + ".000";
+  } else {
+    // Ensure 3 digits for milliseconds
+    const [s, ms] = secondsPart.split('.');
+    parts[2] = `${s}.${ms.padEnd(3, '0').substring(0, 3)}`;
+  }
+  return parts.map(p => p.padStart(2, '0')).join(':');
+}
+
 export async function transcribeAudio(
   modelName: string,
   audioBase64: string,
@@ -40,10 +59,8 @@ export async function transcribeAudio(
   try {
     const isGemini3 = modelName.includes('gemini-3');
     
-    // Instruksi agresif untuk presisi milidetik
-    const precisionInstruction = isGemini3 
-      ? "ANALYZE audio wave patterns deeply. DO NOT round timestamps. We need high-fidelity millisecond precision (mmm). If a word starts at 1.234s, mark it as 00:00:01.234, not 00:00:01.200 or 00:00:01.000." 
-      : "Provide accurate timestamps with millisecond precision.";
+    // Instruksi yang sangat ketat untuk format milidetik
+    const precisionInstruction = "ANALISIS gelombang suara secara mendetail. JANGAN MEMBULATKAN waktu. Gunakan presisi milidetik (mmm) secara eksplisit. Format WAJIB: HH:MM:SS.mmm.";
 
     const response = await ai.models.generateContent({
       model: modelName,
@@ -57,9 +74,10 @@ export async function transcribeAudio(
               },
             },
             {
-              text: `Transcribe this audio. ${precisionInstruction} 
-              Return JSON with 'segments'. Use EXACTLY HH:MM:SS.mmm format for all timestamps. 
-              Accuracy of the milliseconds is critical for synchronization.`,
+              text: `Transkripsikan audio ini. ${precisionInstruction} 
+              Kembalikan JSON dengan properti 'segments'. 
+              Sama seperti Gemini 3, format waktu harus HH:MM:SS.mmm. 
+              Ketepatan milidetik sangat penting agar teks tidak melompat-lompat saat diputar.`,
             },
           ],
         },
@@ -75,7 +93,14 @@ export async function transcribeAudio(
     if (!text) throw new Error("Empty response from model");
 
     const parsed = JSON.parse(text);
-    return parsed.segments || [];
+    const segments = parsed.segments || [];
+
+    // Post-processing untuk menjamin kualitas format timestamp
+    return segments.map((s: any) => ({
+      startTime: normalizeTimestamp(String(s.startTime)),
+      endTime: normalizeTimestamp(String(s.endTime)),
+      text: String(s.text)
+    }));
   } catch (error: any) {
     console.error(`Error transcribing with ${modelName}:`, error);
     throw new Error(error.message || "Transcription failed");
@@ -93,7 +118,8 @@ export async function translateSegments(
         {
           parts: [
             {
-              text: `Translate these segments into ${targetLanguage}. Maintain the original high-precision HH:MM:SS.mmm timestamps exactly.
+              text: `Translate these segments into ${targetLanguage}. 
+              Keep the high-precision HH:MM:SS.mmm timestamps EXACTLY as they are.
               Data: ${JSON.stringify(segments)}`,
             },
           ],

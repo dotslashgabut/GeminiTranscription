@@ -14,34 +14,22 @@ const LANGUAGES = [
 
 /**
  * Robustly parses various timestamp formats into total seconds.
- * Fixes "jump" issues by correctly identifying HH:MM:SS.mmm vs MM:SS:mmm.
  */
 export const parseTimestamp = (timestamp: string | number): number => {
   if (timestamp === undefined || timestamp === null) return 0;
   
   let str = timestamp.toString().trim().toLowerCase();
-  str = str.replace(/[ms]/g, '');
+  str = str.replace(/[ms]/g, '').replace(',', '.');
 
   if (str.includes(':')) {
-    const parts = str.split(/[:]/).map(p => parseFloat(p.replace(',', '.')) || 0);
-    
-    // Case 1: HH:MM:SS.mmm (3 parts, standard)
+    const parts = str.split(':').map(p => parseFloat(p) || 0);
     if (parts.length === 3) {
-      // Heuristic check: If the 3rd part is >= 60, it's likely milliseconds mistaken as a part.
-      // e.g., 01:23:456 (1m 23s 456ms) instead of 00:01:23.456
-      if (parts[2] >= 60) {
-        return (parts[0] * 60) + parts[1] + (parts[2] / 1000);
-      }
       return (parts[0] * 3600) + (parts[1] * 60) + parts[2];
-    } 
-    // Case 2: MM:SS.mmm (2 parts)
-    else if (parts.length === 2) {
+    } else if (parts.length === 2) {
       return (parts[0] * 60) + parts[1];
     }
   }
-
-  // Handle pure seconds or other weird single-number formats
-  return parseFloat(str.replace(',', '.')) || 0;
+  return parseFloat(str) || 0;
 };
 
 const App: React.FC = () => {
@@ -122,6 +110,8 @@ const App: React.FC = () => {
   };
 
   const activeIndices = useMemo(() => {
+    const EPSILON = 0.05; // 50ms buffer to prevent flickering
+
     const findActive = (segments: TranscriptionSegment[]) => {
       if (!segments.length) return -1;
       
@@ -131,20 +121,22 @@ const App: React.FC = () => {
         end: parseTimestamp(s.endTime)
       }));
 
-      const matches = normalized.filter(m => currentTime >= m.start && currentTime < m.end);
-      if (matches.length > 0) {
-        return matches[matches.length - 1].idx;
+      // 1. Find the exact match first
+      const exactMatches = normalized.filter(m => currentTime >= m.start && currentTime < m.end);
+      if (exactMatches.length > 0) {
+        return exactMatches[0].idx;
       }
       
-      let lastStartedIdx = -1;
+      // 2. Fallback to closest previous segment with a small buffer
+      let candidateIdx = -1;
       for (let i = 0; i < normalized.length; i++) {
-        if (normalized[i].start <= currentTime) {
-          lastStartedIdx = i;
+        if (currentTime >= normalized[i].start - EPSILON) {
+          candidateIdx = i;
         } else {
           break;
         }
       }
-      return lastStartedIdx;
+      return candidateIdx;
     };
 
     return {
