@@ -48,12 +48,9 @@ export const parseTimestamp = (timestamp: string | number): number => {
 
 /**
  * Ensures the correct MIME type is sent to Gemini based on file extension.
- * Browsers sometimes default to 'audio/mpeg' or 'application/octet-stream' for formats like FLAC.
  */
 const getCorrectMimeType = (filename: string, originalType: string): string => {
   const ext = filename.split('.').pop()?.toLowerCase();
-  
-  // Explicit overrides for Gemini-compatible formats
   switch (ext) {
     case 'mp3': return 'audio/mp3';
     case 'wav': return 'audio/wav';
@@ -65,13 +62,9 @@ const getCorrectMimeType = (filename: string, originalType: string): string => {
     case 'webm': return 'audio/webm';
     case 'opus': return 'audio/ogg';
   }
-  
-  // Fallback to detected type if it seems valid (audio/*)
   if (originalType && (originalType.startsWith('audio/') || originalType.startsWith('video/'))) {
     return originalType;
   }
-  
-  // Final fallback
   return 'audio/mp3';
 };
 
@@ -134,9 +127,7 @@ const App: React.FC = () => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const base64 = (e.target?.result as string).split(',')[1];
-        // Ensure correct MIME type for formats like FLAC/M4A
         const mimeType = getCorrectMimeType(file.name, file.type);
-        
         setAudioFile({
           base64,
           mimeType,
@@ -154,16 +145,14 @@ const App: React.FC = () => {
     setIsFetchingUrl(true);
     try {
       const response = await fetch(urlInput);
-      if (!response.ok) throw new Error('Failed to fetch audio from URL. Check if URL is correct or if site allows cross-origin requests.');
+      if (!response.ok) throw new Error('Failed to fetch audio from URL.');
       
       const blob = await response.blob();
       const reader = new FileReader();
-      
       reader.onloadend = () => {
         const base64 = (reader.result as string).split(',')[1];
         const fileName = urlInput.split('/').pop()?.split('?')[0] || 'remote-audio';
         const mimeType = getCorrectMimeType(fileName, blob.type);
-
         setAudioFile({
           base64,
           mimeType,
@@ -173,7 +162,6 @@ const App: React.FC = () => {
         setCurrentTime(0);
         setIsFetchingUrl(false);
       };
-      
       reader.readAsDataURL(blob);
     } catch (error: any) {
       alert(`Error loading audio URL: ${error.message}`);
@@ -181,7 +169,6 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Recording Logic ---
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -190,9 +177,7 @@ const App: React.FC = () => {
       audioChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
       };
 
       mediaRecorder.onstop = () => {
@@ -209,8 +194,6 @@ const App: React.FC = () => {
           setCurrentTime(0);
         };
         reader.readAsDataURL(audioBlob);
-        
-        // Stop all tracks to release microphone
         stream.getTracks().forEach(track => track.stop());
       };
 
@@ -220,10 +203,9 @@ const App: React.FC = () => {
       recordingIntervalRef.current = window.setInterval(() => {
         setRecordingTime(prev => prev + 1);
       }, 1000);
-
     } catch (err) {
       console.error("Error accessing microphone:", err);
-      alert("Could not access microphone. Please ensure permissions are granted.");
+      alert("Could not access microphone.");
     }
   };
 
@@ -238,20 +220,37 @@ const App: React.FC = () => {
     }
   };
 
-  const formatRecordingTime = (seconds: number) => {
-    const mm = Math.floor(seconds / 60).toString().padStart(2, '0');
-    const ss = (seconds % 60).toString().padStart(2, '0');
-    return `${mm}:${ss}`;
+  const handleNewSession = () => {
+    // 1. Abort any ongoing processes
+    stopTranscription('left');
+    stopTranscription('right');
+    if (isRecording) stopRecording();
+
+    // 2. Reset Audio State
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    if (audioFile?.previewUrl) {
+      URL.revokeObjectURL(audioFile.previewUrl);
+    }
+
+    // 3. Clear all states
+    setAudioFile(null);
+    setUrlInput("");
+    setCurrentTime(0);
+    setResults({
+      left: { modelName: 'gemini-2.5-flash', segments: [], loading: false },
+      right: { modelName: 'gemini-3-flash-preview', segments: [], loading: false },
+    });
+    setLastInteractedSide(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
-  // -----------------------
 
   const handleSegmentClick = (startTime: string, side: 'left' | 'right') => {
     setLastInteractedSide(side);
-
     if (interactionTimeout.current) window.clearTimeout(interactionTimeout.current);
-    interactionTimeout.current = window.setTimeout(() => {
-      setLastInteractedSide(null);
-    }, 3000);
+    interactionTimeout.current = window.setTimeout(() => setLastInteractedSide(null), 3000);
 
     if (audioRef.current) {
       const seconds = parseTimestamp(startTime);
@@ -261,41 +260,28 @@ const App: React.FC = () => {
   };
 
   const handleTimeUpdate = () => {
-    if (audioRef.current) {
-      setCurrentTime(audioRef.current.currentTime);
-    }
+    if (audioRef.current) setCurrentTime(audioRef.current.currentTime);
   };
 
   const activeIndices = useMemo(() => {
-    const EPSILON = 0.05; // 50ms buffer to prevent flickering
-
+    const EPSILON = 0.05;
     const findActive = (segments: TranscriptionSegment[]) => {
       if (!segments.length) return -1;
-      
       const normalized = segments.map((s, idx) => ({
         idx,
         start: parseTimestamp(s.startTime),
         end: parseTimestamp(s.endTime)
       }));
-
-      // 1. Find the exact match first
       const exactMatches = normalized.filter(m => currentTime >= m.start && currentTime < m.end);
-      if (exactMatches.length > 0) {
-        return exactMatches[0].idx;
-      }
+      if (exactMatches.length > 0) return exactMatches[0].idx;
       
-      // 2. Fallback to closest previous segment with a small buffer
       let candidateIdx = -1;
       for (let i = 0; i < normalized.length; i++) {
-        if (currentTime >= normalized[i].start - EPSILON) {
-          candidateIdx = i;
-        } else {
-          break;
-        }
+        if (currentTime >= normalized[i].start - EPSILON) candidateIdx = i;
+        else break;
       }
       return candidateIdx;
     };
-
     return {
       left: findActive(results.left.segments),
       right: findActive(results.right.segments)
@@ -309,13 +295,9 @@ const App: React.FC = () => {
       right: { ...results.right, loading: true, segments: [], error: undefined },
     });
     const runTranscription = async (side: 'left' | 'right') => {
-      // Create new abort controller
-      if (abortControllersRef.current[side]) {
-        abortControllersRef.current[side]?.abort();
-      }
+      if (abortControllersRef.current[side]) abortControllersRef.current[side]?.abort();
       const controller = new AbortController();
       abortControllersRef.current[side] = controller;
-
       try {
         const segments = await transcribeAudio(
           results[side].modelName, 
@@ -326,7 +308,7 @@ const App: React.FC = () => {
         setResults(prev => ({ ...prev, [side]: { ...prev[side], segments, loading: false } }));
       } catch (err: any) {
         if (err.name === 'AbortError') {
-          setResults(prev => ({ ...prev, [side]: { ...prev[side], loading: false, error: 'Canceled by user' } }));
+          setResults(prev => ({ ...prev, [side]: { ...prev[side], loading: false, error: 'Canceled' } }));
         } else {
           setResults(prev => ({ ...prev, [side]: { ...prev[side], error: err.message, loading: false } }));
         }
@@ -383,6 +365,7 @@ const App: React.FC = () => {
   const isTranscribing = results.left.loading || results.right.loading;
   const isTranslating = results.left.translating || results.right.translating;
   const hasResults = results.left.segments.length > 0 || results.right.segments.length > 0;
+  const canClear = audioFile !== null || urlInput !== "" || hasResults;
 
   return (
     <div ref={appContainerRef} className="h-screen flex flex-col bg-slate-100 overflow-hidden font-sans">
@@ -394,13 +377,19 @@ const App: React.FC = () => {
                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-blue-600 md:w-7 md:h-7"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" x2="12" y1="19" y2="22" /></svg>
                 <span className="truncate">Gemini Transcription</span>
               </h1>
-              <button onClick={toggleFullscreen} className="lg:hidden p-2 text-slate-600 hover:bg-slate-100 rounded-xl border border-slate-200 shadow-sm bg-white">
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
-              </button>
+              <div className="flex items-center gap-2 lg:hidden">
+                {canClear && (
+                  <button onClick={handleNewSession} className="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-xl border border-slate-200 bg-white">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                  </button>
+                )}
+                <button onClick={toggleFullscreen} className="p-2 text-slate-600 hover:bg-slate-100 rounded-xl border border-slate-200 shadow-sm bg-white">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
+                </button>
+              </div>
             </div>
 
             <div className="flex items-center gap-2 md:gap-3 flex-wrap">
-              {/* URL Input Group */}
               <div className="flex items-center bg-slate-100 rounded-xl border border-slate-200 p-1 flex-1 min-w-[200px] md:flex-none">
                 <input 
                   type="text" 
@@ -435,7 +424,6 @@ const App: React.FC = () => {
                   {audioFile ? 'Change' : 'Upload'}
                 </button>
                 
-                {/* Record Button */}
                 <button 
                   onClick={isRecording ? stopRecording : startRecording}
                   disabled={isTranscribing}
@@ -446,8 +434,18 @@ const App: React.FC = () => {
                   } ${isTranscribing ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <span className={`w-2 h-2 rounded-full ${isRecording ? 'bg-red-600 animate-pulse' : 'bg-slate-400'}`}></span>
-                  {isRecording ? `Stop (${formatRecordingTime(recordingTime)})` : 'Record'}
+                  {isRecording ? `Stop` : 'Record'}
                 </button>
+
+                {canClear && (
+                  <button 
+                    onClick={handleNewSession}
+                    className="hidden lg:flex items-center gap-2 px-3 md:px-4 py-2 text-xs md:text-sm font-semibold text-slate-600 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 shadow-sm transition-all whitespace-nowrap"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                    New Session
+                  </button>
+                )}
 
                 <button
                   disabled={!audioFile || isTranscribing || isRecording}
