@@ -22,14 +22,15 @@ const SegmentItem: React.FC<SegmentItemProps> = ({ segment, isActive, isManualSe
       const container = element.closest('.overflow-y-auto');
       
       if (container) {
-        // Use a slight delay to ensure render is complete
+        // Use a faster timeout for snappier response in word-mode
         const scrollTimeout = window.setTimeout(() => {
           const containerHeight = container.clientHeight;
           const elementTop = element.offsetTop;
           const elementHeight = element.clientHeight;
           const scrollTop = container.scrollTop;
 
-          const buffer = 100; // Increased buffer for better visibility context
+          // Reduced buffer to 20px to ensure better tracking on small screens
+          const buffer = 20; 
           const isFullyVisible = (elementTop >= scrollTop + buffer) && 
                                 (elementTop + elementHeight <= scrollTop + containerHeight - buffer);
 
@@ -40,7 +41,7 @@ const SegmentItem: React.FC<SegmentItemProps> = ({ segment, isActive, isManualSe
               behavior: 'smooth'
             });
           }
-        }, 100);
+        }, 50); // Reduced delay to 50ms
         return () => window.clearTimeout(scrollTimeout);
       }
     }

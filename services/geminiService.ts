@@ -14,15 +14,15 @@ const TRANSCRIPTION_SCHEMA = {
         properties: {
           startTime: {
             type: Type.STRING,
-            description: "Timestamp in 'MM:SS.mmm' format (e.g. '00:41.520'). Use 'HH:MM:SS.mmm' only if needed.",
+            description: "Absolute timestamp in 'HH:MM:SS.mmm' format (e.g. '00:00:41.520').",
           },
           endTime: {
             type: Type.STRING,
-            description: "Timestamp in 'MM:SS.mmm' format.",
+            description: "Absolute timestamp in 'HH:MM:SS.mmm' format.",
           },
           text: {
             type: Type.STRING,
-            description: "Transcribed text. Exact words spoken. No hallucinations. Must include every single word.",
+            description: "Transcribed text. Exact words spoken.",
           },
         },
         required: ["startTime", "endTime", "text"],
@@ -33,81 +33,100 @@ const TRANSCRIPTION_SCHEMA = {
 };
 
 /**
- * Robustly normalizes timestamp strings to HH:MM:SS.mmm
- * Handles MM:SS.mmm, HH:MM:SS.mmm, and even MM:SS:mmm (colon errors).
+ * Converts various timestamp strings to seconds with high robustness.
+ * Handles:
+ * - HH:MM:SS.mmm
+ * - MM:SS.mmm
+ * - HH:MM:SS:mmm (hallucination)
+ * - SS.mmm
  */
-function normalizeTimestamp(ts: string): string {
-  if (!ts) return "00:00:00.000";
+export function timestampToSeconds(ts: string): number {
+  if (!ts) return 0;
+  // Normalize: replace comma with dot, remove everything else except digits, dots, colons
+  const clean = ts.trim().replace(/,/g, '.').replace(/[^\d:.]/g, '');
   
-  // Replace comma with dot for standardizing milliseconds if model uses comma
-  let clean = ts.trim().replace(',', '.').replace(/[^\d:.]/g, '');
-  
-  // Handle if model returns raw seconds (e.g. "65.5") despite instructions
-  if (!clean.includes(':') && /^[\d.]+$/.test(clean)) {
-    const totalSeconds = parseFloat(clean);
-    if (!isNaN(totalSeconds)) {
-       const h = Math.floor(totalSeconds / 3600);
-       const m = Math.floor((totalSeconds % 3600) / 60);
-       const s = Math.floor(totalSeconds % 60);
-       const ms = Math.round((totalSeconds % 1) * 1000);
-       return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
-    }
+  if (!clean.includes(':')) {
+    return parseFloat(clean) || 0;
   }
 
-  const parts = clean.split(':');
-  let h = 0, m = 0, s = 0, ms = 0;
-
+  const parts = clean.split(':').map(p => parseFloat(p) || 0);
+  
+  // Handle HH:MM:SS:mmm (4 parts) - rare hallucination where colon is used for ms
   if (parts.length === 4) {
-    // Model hallucinated HH:MM:SS:mmm (colon for ms)
-    h = parseInt(parts[0], 10) || 0;
-    m = parseInt(parts[1], 10) || 0;
-    s = parseInt(parts[2], 10) || 0;
-    ms = parseInt(parts[3].substring(0, 3).padEnd(3, '0'), 10) || 0;
-  } else if (parts.length === 3) {
-    const p0 = parseInt(parts[0], 10) || 0;
-    const p1 = parseInt(parts[1], 10) || 0;
-    
-    if (parts[2].includes('.')) {
-      // Standard HH:MM:SS.mmm
-      h = p0;
-      m = p1;
-      const secParts = parts[2].split('.');
-      s = parseInt(secParts[0], 10) || 0;
-      ms = parseInt(secParts[1].substring(0, 3).padEnd(3, '0'), 10) || 0;
-    } else {
-       // Ambiguous: HH:MM:SS or MM:SS:mmm
-       // Check if 3rd part is clearly milliseconds (3 digits or > 59)
-       const p2Raw = parts[2];
-       const p2 = parseInt(p2Raw, 10) || 0;
-       
-       if (p2Raw.length === 3 || p2 > 59) {
-           // Treat as MM:SS:mmm (Model error using colon for ms)
-           m = p0; s = p1; ms = p2;
-       } else {
-           // Treat as HH:MM:SS
-           h = p0; m = p1; s = p2;
-       }
+    return (parts[0] * 3600) + (parts[1] * 60) + parts[2] + (parts[3] / 1000);
+  }
+  
+  // Handle HH:MM:SS.mmm (3 parts)
+  if (parts.length === 3) {
+    return (parts[0] * 3600) + (parts[1] * 60) + parts[2];
+  }
+  
+  // Handle MM:SS.mmm (2 parts)
+  if (parts.length === 2) {
+    return (parts[0] * 60) + parts[1];
+  }
+  
+  return parseFloat(clean) || 0;
+}
+
+/**
+ * Formats seconds back to HH:MM:SS.mmm correctly handling rounding.
+ */
+function secondsToTimestamp(totalSeconds: number): string {
+  const roundedMs = Math.round(totalSeconds * 1000);
+  const h = Math.floor(roundedMs / 3600000);
+  const m = Math.floor((roundedMs % 3600000) / 60000);
+  const s = Math.floor((roundedMs % 60000) / 1000);
+  const ms = roundedMs % 1000;
+  
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+}
+
+/**
+ * Repairs non-monotonic timestamps (jumping backwards).
+ */
+function enforceMonotonicity(segments: any[]): TranscriptionSegment[] {
+  if (!segments || segments.length === 0) return [];
+
+  const processed: TranscriptionSegment[] = [];
+  let lastStartTime = -1;
+  let lastEndTime = 0;
+
+  for (const seg of segments) {
+    let start = timestampToSeconds(seg.startTime);
+    let end = timestampToSeconds(seg.endTime);
+
+    // 1. Fix backward jumps (Model hallucination or reset)
+    // If start time jumps back significantly compared to last end, clamp it.
+    // We use a small tolerance (0.1s) to allow minor overlaps which are natural in speech.
+    // NOTE: This specifically fixes the "reset to 0" bug in some models.
+    if (start < lastEndTime - 0.1) {
+      start = lastEndTime;
     }
-  } else if (parts.length === 2) {
-    // MM:SS.mmm or MM:SS
-    m = parseInt(parts[0], 10) || 0;
-    if (parts[1].includes('.')) {
-      const secParts = parts[1].split('.');
-      s = parseInt(secParts[0], 10) || 0;
-      ms = parseInt(secParts[1].substring(0, 3).padEnd(3, '0'), 10) || 0;
-    } else {
-      s = parseInt(parts[1], 10) || 0;
+
+    // 2. Ensure start doesn't drift before last start (Basic causality)
+    if (start < lastStartTime) {
+      start = lastStartTime;
     }
+
+    // 3. Ensure duration is positive.
+    // If text is present but time is squashed, give it a minimum window.
+    if (end <= start) {
+      end = start + 0.1; // Minimum 100ms duration
+    }
+
+    // Update trackers
+    lastStartTime = start;
+    lastEndTime = end;
+
+    processed.push({
+      startTime: secondsToTimestamp(start),
+      endTime: secondsToTimestamp(end),
+      text: String(seg.text).trim()
+    });
   }
 
-  // Recalculate to normalize potential overflows (e.g. 65 seconds -> 1 min 5 sec)
-  const totalSeconds = (h * 3600) + (m * 60) + s + (ms / 1000);
-  const finalH = Math.floor(totalSeconds / 3600);
-  const finalM = Math.floor((totalSeconds % 3600) / 60);
-  const finalS = Math.floor(totalSeconds % 60);
-  const finalMs = Math.round((totalSeconds % 1) * 1000);
-
-  return `${String(finalH).padStart(2, '0')}:${String(finalM).padStart(2, '0')}:${String(finalS).padStart(2, '0')}.${String(finalMs).padStart(3, '0')}`;
+  return processed;
 }
 
 /**
@@ -138,8 +157,9 @@ function tryRepairJson(jsonString: string): any {
     }
   }
 
+  // Fallback regex extraction
   const segments = [];
-  const segmentRegex = /\{\s*"startTime"\s*:\s*"?([^",]+)"?\s*,\s*"endTime"\s*:\s*"?([^",]+)"?\s*,\s*"text"\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')/g;
+  const segmentRegex = /\{\s*"startTime"\s*"?\s*:\s*"?([^",]+)"?\s*,\s*"endTime"\s*"?\s*:\s*"?([^",]+)"?\s*,\s*"text"\s*"?\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')/g;
   
   let match;
   while ((match = segmentRegex.exec(trimmed)) !== null) {
@@ -175,61 +195,41 @@ export async function transcribeAudio(
   try {
     const isGemini3 = modelName.includes('gemini-3');
     
+    // Updated policies to strictly enforce HH:MM:SS.mmm to avoid ambiguity
     const timingPolicy = `
-    STRICT TIMING POLICY:
-    1. FORMAT: Use **MM:SS.mmm** (e.g. 05:30.500). If audio > 1 hour, use HH:MM:SS.mmm.
-    2. SEPARATOR: Use a DOT (.) for milliseconds.
-    3. ABSOLUTE & CUMULATIVE: Timestamps must be relative to the START of the file.
-    4. MONOTONICITY: Time MUST always move forward. startTime[n] >= endTime[n-1].
-    5. ACCURACY: Sync text exactly to when it is spoken.
+    STRICT TIMING & MONOTONICITY POLICY:
+    1. FORMAT: You MUST use **HH:MM:SS.mmm** (e.g. 00:00:12.500) for ALL timestamps.
+    2. ABSOLUTE TIME: Timestamps are relative to the START of the audio file (00:00:00.000). NEVER reset to 0 mid-stream.
+    3. SEQUENTIAL: Timestamps MUST strictly increase. startTime(n) must be >= startTime(n-1).
+    4. ACCURACY: Sync text exactly to when it is spoken.
     `;
 
     const subtitlePolicy = `
-    SUBTITLE & LYRIC OPTIMIZATION (LINE MODE):
-    1. SEGMENTATION: Break text into short, readable chunks suitable for subtitles (karaoke/lyric style).
-    2. MAX DURATION: Prefer segments of 1-5 seconds. Avoid segments longer than 7 seconds unless it's a long sustained note.
-    3. PHRASING: Break segments at natural pauses, commas, or musical phrasing boundaries.
-    4. LINE LENGTH: Keep segments concise (under 42 characters if possible).
+    SUBTITLE (LINE MODE):
+    1. SEGMENTATION: 1-5 seconds per segment.
+    2. TEXT: Complete sentences or natural phrases.
     `;
 
     const wordLevelPolicy = `
-    WORD-LEVEL GRANULARITY (WORD MODE):
-    1. EXTREME SEGMENTATION: Break segments into individual words or extremely short phrases (max 2-3 words).
-    2. PURPOSE: This is for high-precision karaoke/TTML timing.
-    3. TIMING: startTime and endTime must strictly bound the specific word(s) spoken.
-    4. DENSITY: You will generate many small segments. This is expected.
+    WORD-LEVEL (WORD MODE):
+    1. SEGMENTATION: **ONE WORD PER SEGMENT**.
+    2. CONTINUITY: Ensure no large gaps between words unless there is silence.
+    3. STRICT ORDER: Do not output words out of order.
+    `;
+
+    // Few-shot examples are critical for 2.5 Flash to follow formatting strictly
+    const fewShotExamples = `
+    EXAMPLE JSON OUTPUT (Word Mode):
+    {
+      "segments": [
+        { "startTime": "00:00:00.000", "endTime": "00:00:00.600", "text": "The" },
+        { "startTime": "00:00:00.600", "endTime": "00:00:01.100", "text": "quick" },
+        { "startTime": "00:00:01.100", "endTime": "00:00:01.800", "text": "brown" }
+      ]
+    }
     `;
 
     const segmentationPolicy = granularity === 'word' ? wordLevelPolicy : subtitlePolicy;
-
-    const verbatimPolicy = `
-    VERBATIM & FIDELITY POLICY (EXTREMELY IMPORTANT):
-    1. STRICT VERBATIM: Transcribe EXACTLY what is spoken/sung. Do not paraphrase, summarize, or "correct" grammar.
-    2. REPETITIONS & STUTTERS: You MUST transcribe every repeated sound. If the speaker says "eh eh eh eh eh", you must write "eh eh eh eh eh". Do not condense it to "eh".
-    3. CHORUS & HOOKS: If lines are repeated in a song (e.g., chorus), transcribe them fully every time.
-    4. MUSICAL VOCABLES: Preserve "ooh", "aah", "la la la", "na na" if they are part of the lyrics/melody.
-    5. FALSE STARTS: Keep all false starts (e.g. "I went to... I went home").
-    `;
-
-    const completenessPolicy = `
-    COMPLETENESS POLICY (CRITICAL):
-    1. EXHAUSTIVE: You must transcribe the ENTIRE audio file from start to finish.
-    2. NO SKIPPING: Do not skip any sentences or words, even if they are quiet or fast.
-    3. NO DEDUPLICATION: If a speaker repeats the same sentence, you MUST transcribe it every time it is said.
-    `;
-
-    const antiHallucinationPolicy = `
-    ANTI-HALLUCINATION:
-    1. NO INVENTED TEXT: Do NOT output text if no speech is present.
-    2. NO GUESSING: If audio is absolutely unintelligible, skip it.
-    3. NO LABELS: Do not add speaker labels (like "Speaker 1:", "Lyric:"). Just the raw spoken text.
-    `;
-
-    const jsonSafetyPolicy = `
-    JSON FORMATTING SAFETY:
-    1. TEXT ESCAPING: The 'text' field MUST be wrapped in DOUBLE QUOTES (").
-    2. INTERNAL QUOTES: If the text contains a double quote, ESCAPE IT (e.g. \\"). 
-    `;
 
     const requestConfig: any = {
       responseMimeType: "application/json",
@@ -259,18 +259,20 @@ export async function transcribeAudio(
                 },
               },
               {
-                text: `You are a high-fidelity, verbatim audio transcription engine optimized for **Subtitles and Lyrics**. Your output must be exhaustive, complete, and perfectly timed.
+                text: `You are a high-fidelity audio transcription engine.
                 
                 ${timingPolicy}
                 ${segmentationPolicy}
-                ${verbatimPolicy}
-                ${completenessPolicy}
-                ${antiHallucinationPolicy}
-                ${jsonSafetyPolicy}
                 
-                REQUIRED FORMAT: JSON object with "segments" array. 
-                Preferred timestamp format: 'MM:SS.mmm'.
-                Do not stop until you have reached the end of the audio.`,
+                ${fewShotExamples}
+
+                Rules:
+                - Transcribe VERBATIM (every stutter, false start).
+                - Do not summarize.
+                - Output valid JSON.
+                - Ensure timestamps NEVER jump backwards.
+                
+                Audio processing...`,
               },
             ],
           },
@@ -291,13 +293,11 @@ export async function transcribeAudio(
     }
 
     const parsed = tryRepairJson(text);
-    const segments = parsed.segments || [];
+    const rawSegments = parsed.segments || [];
 
-    return segments.map((s: any) => ({
-      startTime: normalizeTimestamp(String(s.startTime)),
-      endTime: normalizeTimestamp(String(s.endTime)),
-      text: String(s.text)
-    }));
+    // Apply strict post-processing to fix jumping timestamps
+    return enforceMonotonicity(rawSegments);
+
   } catch (error: any) {
     if (error.name === 'AbortError') throw error;
     console.error(`Error with ${modelName}:`, error);

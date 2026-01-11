@@ -1,7 +1,6 @@
-
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { AudioFileData, TranscriptionResult, TranscriptionSegment } from './types';
-import { transcribeAudio, translateSegments } from './services/geminiService';
+import { transcribeAudio, translateSegments, timestampToSeconds } from './services/geminiService';
 import SegmentItem from './components/SegmentItem';
 import * as Exporters from './utils/exporters';
 
@@ -28,22 +27,11 @@ const LANGUAGES = [
 
 /**
  * Robustly parses various timestamp formats into total seconds.
+ * Relies on the shared logic from geminiService to ensure consistency.
  */
 export const parseTimestamp = (timestamp: string | number): number => {
   if (timestamp === undefined || timestamp === null) return 0;
-  
-  let str = timestamp.toString().trim().toLowerCase();
-  str = str.replace(/[ms]/g, '').replace(',', '.');
-
-  if (str.includes(':')) {
-    const parts = str.split(':').map(p => parseFloat(p) || 0);
-    if (parts.length === 3) {
-      return (parts[0] * 3600) + (parts[1] * 60) + parts[2];
-    } else if (parts.length === 2) {
-      return (parts[0] * 60) + parts[1];
-    }
-  }
-  return parseFloat(str) || 0;
+  return timestampToSeconds(timestamp.toString());
 };
 
 /**
@@ -68,6 +56,8 @@ const getCorrectMimeType = (filename: string, originalType: string): string => {
   return 'audio/mp3';
 };
 
+type ModelSelection = 'both' | 'left' | 'right';
+
 const App: React.FC = () => {
   const [audioFile, setAudioFile] = useState<AudioFileData | null>(null);
   const [urlInput, setUrlInput] = useState("");
@@ -76,6 +66,7 @@ const App: React.FC = () => {
   const [currentTime, setCurrentTime] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [granularity, setGranularity] = useState<'line' | 'word'>('line');
+  const [modelSelection, setModelSelection] = useState<ModelSelection>('both');
   
   // Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -294,10 +285,18 @@ const App: React.FC = () => {
       audioRef.current.pause();
     }
 
-    setResults(prev => ({
-      left: { ...prev.left, loading: true, segments: [], error: undefined },
-      right: { ...prev.right, loading: true, segments: [], error: undefined },
-    }));
+    // Reset only the selected sides
+    setResults(prev => {
+      const next = { ...prev };
+      if (modelSelection === 'both' || modelSelection === 'left') {
+        next.left = { ...prev.left, loading: true, segments: [], error: undefined };
+      }
+      if (modelSelection === 'both' || modelSelection === 'right') {
+        next.right = { ...prev.right, loading: true, segments: [], error: undefined };
+      }
+      return next;
+    });
+
     const runTranscription = async (side: 'left' | 'right') => {
       if (abortControllersRef.current[side]) abortControllersRef.current[side]?.abort();
       const controller = new AbortController();
@@ -321,7 +320,16 @@ const App: React.FC = () => {
         abortControllersRef.current[side] = null;
       }
     };
-    await Promise.all([runTranscription('left'), runTranscription('right')]);
+
+    const promises = [];
+    if (modelSelection === 'both' || modelSelection === 'left') {
+      promises.push(runTranscription('left'));
+    }
+    if (modelSelection === 'both' || modelSelection === 'right') {
+      promises.push(runTranscription('right'));
+    }
+
+    await Promise.all(promises);
   };
 
   const stopTranscription = (side: 'left' | 'right') => {
@@ -376,136 +384,179 @@ const App: React.FC = () => {
   return (
     <div ref={appContainerRef} className="h-screen flex flex-col bg-slate-100 overflow-hidden font-sans">
       <header className="bg-white border-b border-slate-200 px-4 md:px-6 py-3 md:py-4 flex-shrink-0 z-30 shadow-sm overflow-y-auto max-h-[40vh] md:max-h-none">
-        <div className="max-w-full mx-auto space-y-3 md:space-y-4">
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 md:gap-4">
-            <div className="flex items-center justify-between">
-              <h1 className="text-xl md:text-2xl font-bold text-slate-900 flex items-center gap-2">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-blue-600 md:w-7 md:h-7"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" x2="12" y1="19" y2="22" /></svg>
-                <span className="truncate">Gemini Transcription</span>
-              </h1>
-              <div className="flex items-center gap-2 lg:hidden">
-                {canClear && (
-                  <button onClick={handleNewSession} className="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-xl border border-slate-200 bg-white">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-                  </button>
-                )}
-                <button onClick={toggleFullscreen} className="p-2 text-slate-600 hover:bg-slate-100 rounded-xl border border-slate-200 shadow-sm bg-white">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 md:gap-3 flex-wrap">
-              <div className="flex items-center bg-slate-100 rounded-xl border border-slate-200 p-1 flex-1 min-w-[200px] md:flex-none">
-                <input 
-                  type="text" 
-                  value={urlInput}
-                  onChange={(e) => setUrlInput(e.target.value)}
-                  placeholder="Paste URL (mp3, wav, flac...)"
-                  disabled={isRecording}
-                  className="bg-transparent text-xs md:text-sm px-2 md:px-3 py-1 outline-none flex-1 w-full text-slate-700 disabled:opacity-50"
-                />
+        <div className="max-w-full mx-auto flex flex-col gap-3 md:gap-4">
+          
+          {/* Header Top Row: Title & App Actions */}
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl md:text-2xl font-bold text-slate-900 flex items-center gap-2">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-blue-600 md:w-7 md:h-7"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" x2="12" y1="19" y2="22" /></svg>
+              <span className="truncate">Gemini Transcription</span>
+            </h1>
+            
+            <div className="flex items-center gap-2">
+              {canClear && (
                 <button 
-                  onClick={handleUrlLoad}
-                  disabled={isFetchingUrl || !urlInput || isRecording}
-                  className={`px-2 md:px-3 py-1 text-[10px] md:text-xs font-bold rounded-lg transition-all whitespace-nowrap ${isFetchingUrl || isRecording ? 'bg-slate-200 text-slate-400' : 'bg-white text-blue-600 shadow-sm hover:bg-slate-50 border border-slate-200'}`}
+                  onClick={handleNewSession}
+                  title="New Session"
+                  className="p-2 md:px-4 md:py-2 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-xl border border-slate-200 bg-white shadow-sm transition-all flex items-center gap-2"
                 >
-                  {isFetchingUrl ? '...' : 'Load'}
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                  <span className="hidden md:inline text-xs font-semibold">New Session</span>
                 </button>
-              </div>
-
-              <div className="flex items-center gap-2 flex-wrap">
-                <input 
-                  type="file" 
-                  accept="audio/*,.mp3,.wav,.aac,.ogg,.flac,.m4a,.aiff,.webm" 
-                  className="hidden" 
-                  ref={fileInputRef} 
-                  onChange={handleFileUpload} 
-                />
-                <button 
-                  onClick={() => fileInputRef.current?.click()} 
-                  disabled={isRecording}
-                  className={`px-3 md:px-4 py-2 text-xs md:text-sm font-semibold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 shadow-sm transition-all whitespace-nowrap ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  {audioFile ? 'Change' : 'Upload'}
-                </button>
-                
-                <button 
-                  onClick={isRecording ? stopRecording : startRecording}
-                  disabled={isTranscribing}
-                  className={`px-3 md:px-4 py-2 text-xs md:text-sm font-semibold rounded-xl shadow-sm transition-all flex items-center gap-2 whitespace-nowrap border ${
-                    isRecording 
-                      ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100' 
-                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                  } ${isTranscribing ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <span className={`w-2 h-2 rounded-full ${isRecording ? 'bg-red-600 animate-pulse' : 'bg-slate-400'}`}></span>
-                  {isRecording ? `Stop` : 'Record'}
-                </button>
-
-                <div className="flex items-center bg-white rounded-xl border border-slate-300 overflow-hidden shadow-sm">
-                  <button 
-                    onClick={() => setGranularity('line')}
-                    className={`px-3 py-2 text-xs font-semibold transition-colors ${granularity === 'line' ? 'bg-slate-100 text-slate-900' : 'text-slate-500 hover:bg-slate-50'}`}
-                    disabled={isTranscribing}
-                  >
-                    Line
-                  </button>
-                  <div className="w-px h-full bg-slate-200"></div>
-                  <button 
-                    onClick={() => setGranularity('word')}
-                    className={`px-3 py-2 text-xs font-semibold transition-colors ${granularity === 'word' ? 'bg-slate-100 text-slate-900' : 'text-slate-500 hover:bg-slate-50'}`}
-                    disabled={isTranscribing}
-                  >
-                    Word
-                  </button>
-                </div>
-
-                {canClear && (
-                  <button 
-                    onClick={handleNewSession}
-                    className="hidden lg:flex items-center gap-2 px-3 md:px-4 py-2 text-xs md:text-sm font-semibold text-slate-600 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 shadow-sm transition-all whitespace-nowrap"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-                    New Session
-                  </button>
-                )}
-
-                <button
-                  disabled={!audioFile || isTranscribing || isRecording}
-                  onClick={startTranscription}
-                  className={`px-4 md:px-6 py-2 text-xs md:text-sm font-bold text-white rounded-xl shadow-lg transition-all whitespace-nowrap ${!audioFile || isTranscribing || isRecording ? 'bg-slate-300' : 'bg-blue-600 hover:bg-blue-700'}`}
-                >
-                  {isTranscribing ? '...' : 'Transcribe'}
-                </button>
-              </div>
-
-              {hasResults && (
-                <div className="flex items-center gap-2 border-l pl-2 md:pl-3 border-slate-200 flex-wrap">
-                  <select
-                    value={targetLang}
-                    onChange={(e) => setTargetLang(e.target.value)}
-                    disabled={isRecording}
-                    className="text-xs md:text-sm font-medium border-slate-300 rounded-xl py-1.5 md:py-2 px-2 md:px-3 bg-white shadow-sm text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50"
-                  >
-                    {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
-                  </select>
-                  <button
-                    disabled={isTranslating || isRecording}
-                    onClick={handleTranslate}
-                    className="px-3 md:px-5 py-1.5 md:py-2 text-xs md:text-sm font-bold text-white bg-indigo-600 rounded-xl shadow-lg hover:bg-indigo-700 disabled:bg-slate-300 transition-all whitespace-nowrap"
-                  >
-                    {isTranslating ? '...' : 'Translate'}
-                  </button>
-                </div>
               )}
-
-              <button onClick={toggleFullscreen} className="hidden lg:block p-2.5 text-slate-600 hover:bg-slate-100 rounded-xl border border-slate-200 shadow-sm bg-white">
+              <button onClick={toggleFullscreen} title="Toggle Fullscreen" className="p-2 text-slate-600 hover:bg-slate-100 rounded-xl border border-slate-200 shadow-sm bg-white">
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
               </button>
             </div>
           </div>
 
+          {/* Controls Row: Flattened for optimal wrapping */}
+          <div className="flex flex-wrap items-center gap-2 md:gap-3">
+            
+            {/* URL Input */}
+            <div className="flex items-center bg-slate-100 rounded-xl border border-slate-200 p-1 flex-grow md:flex-grow-0 min-w-[150px] w-full md:w-auto">
+              <input 
+                type="text" 
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="Paste URL (mp3, wav...)"
+                disabled={isRecording}
+                className="bg-transparent text-xs md:text-sm px-2 md:px-3 py-1 outline-none flex-1 w-full text-slate-700 disabled:opacity-50"
+              />
+              <button 
+                onClick={handleUrlLoad}
+                disabled={isFetchingUrl || !urlInput || isRecording}
+                className={`px-2 md:px-3 py-1 text-[10px] md:text-xs font-bold rounded-lg transition-all whitespace-nowrap ${isFetchingUrl || isRecording ? 'bg-slate-200 text-slate-400' : 'bg-white text-blue-600 shadow-sm hover:bg-slate-50 border border-slate-200'}`}
+              >
+                {isFetchingUrl ? '...' : 'Load'}
+              </button>
+            </div>
+
+            {/* File Upload */}
+            <input 
+              type="file" 
+              accept="audio/*,.mp3,.wav,.aac,.ogg,.flac,.m4a,.aiff,.webm" 
+              className="hidden" 
+              ref={fileInputRef} 
+              onChange={handleFileUpload} 
+            />
+            <button 
+              onClick={() => fileInputRef.current?.click()} 
+              disabled={isRecording}
+              className={`px-3 md:px-4 py-2 text-xs md:text-sm font-semibold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 shadow-sm transition-all whitespace-nowrap ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              {audioFile ? 'Change File' : 'Upload File'}
+            </button>
+            
+            {/* Record */}
+            <button 
+              onClick={isRecording ? stopRecording : startRecording}
+              disabled={isTranscribing}
+              className={`px-3 md:px-4 py-2 text-xs md:text-sm font-semibold rounded-xl shadow-sm transition-all flex items-center gap-2 whitespace-nowrap border ${
+                isRecording 
+                  ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100' 
+                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+              } ${isTranscribing ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <span className={`w-2 h-2 rounded-full ${isRecording ? 'bg-red-600 animate-pulse' : 'bg-slate-400'}`}></span>
+              {isRecording ? `Stop (${recordingTime}s)` : 'Record'}
+            </button>
+
+            {/* Granularity Switch */}
+            <div className="flex items-center bg-white rounded-xl border border-slate-300 overflow-hidden shadow-sm">
+              <button 
+                onClick={() => setGranularity('line')}
+                className={`px-3 py-2 text-xs font-semibold transition-colors ${granularity === 'line' ? 'bg-slate-100 text-slate-900' : 'text-slate-500 hover:bg-slate-50'}`}
+                disabled={isTranscribing}
+              >
+                Line
+              </button>
+              <div className="w-px h-full bg-slate-200"></div>
+              <button 
+                onClick={() => setGranularity('word')}
+                className={`px-3 py-2 text-xs font-semibold transition-colors ${granularity === 'word' ? 'bg-slate-100 text-slate-900' : 'text-slate-500 hover:bg-slate-50'}`}
+                disabled={isTranscribing}
+              >
+                Word
+              </button>
+            </div>
+
+            <div className="w-px h-6 bg-slate-300 mx-1 hidden lg:block"></div>
+
+            {/* Model Selection */}
+            <select
+              value={modelSelection}
+              onChange={(e) => setModelSelection(e.target.value as ModelSelection)}
+              disabled={isTranscribing || isRecording}
+              className="text-xs md:text-sm font-medium border-slate-300 rounded-xl py-2 px-2 bg-white shadow-sm text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none border hover:bg-slate-50 cursor-pointer disabled:opacity-50"
+            >
+              <option value="both">Both Models</option>
+              <option value="left">Gemini 2.5 Only</option>
+              <option value="right">Gemini 3 Only</option>
+            </select>
+
+            {/* Transcribe Button */}
+            <button
+              disabled={!audioFile || isTranscribing || isRecording}
+              onClick={startTranscription}
+              className={`px-4 md:px-6 py-2 text-xs md:text-sm font-bold text-white rounded-xl shadow-lg transition-all whitespace-nowrap flex items-center justify-center gap-2 min-w-[120px] ${
+                !audioFile || isTranscribing || isRecording 
+                ? 'bg-slate-300 cursor-not-allowed' 
+                : 'bg-blue-600 hover:bg-blue-700 hover:shadow-xl active:scale-95'
+              }`}
+            >
+              {isTranscribing ? (
+                <>
+                  <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span>Working...</span>
+                </>
+              ) : (
+                'Transcribe'
+              )}
+            </button>
+
+            {/* Translate Controls - Rendered inline to allow wrapping with other buttons */}
+            {hasResults && (
+              <>
+                <div className="w-px h-6 bg-slate-300 mx-1 hidden lg:block"></div>
+                <select
+                  value={targetLang}
+                  onChange={(e) => setTargetLang(e.target.value)}
+                  disabled={isRecording}
+                  className="text-xs md:text-sm font-medium border-slate-300 rounded-xl py-2 px-2 md:px-3 bg-white shadow-sm text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 border"
+                >
+                  {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
+                </select>
+                <button
+                  disabled={isTranslating || isRecording}
+                  onClick={handleTranslate}
+                  className={`px-3 md:px-5 py-2 text-xs md:text-sm font-bold text-white rounded-xl shadow-lg transition-all whitespace-nowrap flex items-center justify-center gap-2 min-w-[100px] ${
+                    isTranslating || isRecording 
+                    ? 'bg-indigo-400 cursor-not-allowed opacity-90' 
+                    : 'bg-indigo-600 hover:bg-indigo-700 hover:shadow-xl active:scale-95'
+                  }`}
+                >
+                  {isTranslating ? (
+                    <>
+                      <svg className="animate-spin h-3 w-3 md:h-4 md:w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      <span>Translating</span>
+                    </>
+                  ) : (
+                    'Translate'
+                  )}
+                </button>
+              </>
+            )}
+
+          </div>
+
+          {/* Audio Player Row */}
           {audioFile && (
             <div className="pt-2 border-t border-slate-100 flex flex-col md:flex-row md:items-center gap-2 md:gap-4 w-full">
               <span className="text-[10px] md:text-xs font-bold text-slate-500 truncate max-w-full md:max-w-xs bg-slate-50 px-2 py-1 rounded">

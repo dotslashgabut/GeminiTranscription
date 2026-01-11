@@ -38,6 +38,39 @@ const formatSecondsToLRC = (totalSeconds: number): string => {
   return `[${m.toString().padStart(2, '0')}:${sInt.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}]`;
 };
 
+/**
+ * Ensures timestamp is in HH:MM:SS.mmm format for TTML.
+ */
+const formatTimestampForTTML = (ts: string): string => {
+  let clean = ts.trim();
+  if (!clean.includes('.')) clean += '.000';
+  
+  // Normalize colon count
+  const colonCount = (clean.match(/:/g) || []).length;
+  if (colonCount === 1) {
+    // MM:SS.mmm -> 00:MM:SS.mmm
+    clean = "00:" + clean;
+  } else if (colonCount === 0) {
+    // raw seconds -> HH:MM:SS.mmm
+    const sec = parseFloat(clean);
+    if (!isNaN(sec)) {
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = Math.floor(sec % 60);
+      const ms = Math.round((sec % 1) * 1000);
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+    }
+  }
+  
+  // Ensure 3 digits for milliseconds
+  if (clean.includes('.')) {
+      const [main, msPart] = clean.split('.');
+      clean = `${main}.${msPart.padEnd(3, '0').substring(0, 3)}`;
+  }
+  
+  return clean;
+};
+
 const escapeXml = (unsafe: string): string => {
   return unsafe.replace(/[<>&'"]/g, (c) => {
     switch (c) {
@@ -49,6 +82,10 @@ const escapeXml = (unsafe: string): string => {
       default: return c;
     }
   });
+};
+
+const isCJK = (text: string): boolean => {
+  return /[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(text);
 };
 
 export const downloadFile = (content: string, filename: string) => {
@@ -80,16 +117,12 @@ export const exportAsSRT = (segments: TranscriptionSegment[], type: 'original' |
 
 export const exportAsLRC = (segments: TranscriptionSegment[], type: 'original' | 'translated', totalDuration?: number): string => {
   const lines: string[] = [];
-  // LRC needs time tag at start of line. Standard is [mm:ss.xx]
-  // We handle simple synchronized lyrics.
-  // Ideally, LRC is one line per timestamp. 
   
   for (let i = 0; i < segments.length; i++) {
     const s = segments[i];
     const startTime = parseTimestampToSeconds(s.startTime);
     const text = type === 'translated' ? (s.translatedText || '') : s.text;
 
-    // Remove newlines from text for LRC compatibility
     const cleanText = text.replace(/[\r\n]+/g, ' ');
     lines.push(`${formatSecondsToLRC(startTime)}${cleanText}`);
   }
@@ -97,17 +130,79 @@ export const exportAsLRC = (segments: TranscriptionSegment[], type: 'original' |
 };
 
 export const exportAsTTML = (segments: TranscriptionSegment[], type: 'original' | 'translated'): string => {
-  const lines = segments.map((s) => {
-    const text = type === 'translated' ? (s.translatedText || '') : s.text;
-    // Ensure HH:MM:SS.mmm format for TTML if not already
-    let start = s.startTime.includes('.') ? s.startTime : `${s.startTime}.000`;
-    let end = s.endTime.includes('.') ? s.endTime : `${s.endTime}.000`;
-    
-    // Basic normalization to ensure HH:MM:SS.mmm if it came in as MM:SS.mmm
-    if (start.length <= 9) start = "00:" + start;
-    if (end.length <= 9) end = "00:" + end;
+  // Logic to group individual segments (words/phrases) into readable lines (paragraphs)
+  const groups: TranscriptionSegment[][] = [];
+  let currentGroup: TranscriptionSegment[] = [];
 
-    return `      <p begin="${start}" end="${end}">${escapeXml(text)}</p>`;
+  segments.forEach((s) => {
+    if (currentGroup.length === 0) {
+      currentGroup.push(s);
+      return;
+    }
+
+    const prev = currentGroup[currentGroup.length - 1];
+    const prevEnd = parseTimestampToSeconds(prev.endTime);
+    const currStart = parseTimestampToSeconds(s.startTime);
+    
+    // Determine text content for logic
+    const prevText = type === 'translated' ? (prev.translatedText || prev.text) : prev.text;
+    
+    // Breaking logic:
+    // 1. Strong punctuation at end of previous segment (. ? ! )
+    const isSentenceEnd = /[.!?。！？]$/.test(prevText.trim());
+    
+    // 2. Time gap (Pause) > 0.8s
+    const isPause = (currStart - prevEnd) > 0.8;
+    
+    // 3. Line length limits. If current line > 45 chars, look for any punctuation or moderate pause to break.
+    const currentChars = currentGroup.reduce((acc, seg) => acc + (type === 'translated' ? (seg.translatedText || '').length : seg.text.length), 0);
+    const isLong = currentChars > 45;
+    const isModeratePause = (currStart - prevEnd) > 0.3;
+    const hasComma = /[,，]$/.test(prevText.trim());
+
+    if (isSentenceEnd || isPause || (isLong && (isModeratePause || hasComma))) {
+      groups.push(currentGroup);
+      currentGroup = [s];
+    } else {
+      currentGroup.push(s);
+    }
+  });
+  
+  if (currentGroup.length > 0) {
+    groups.push(currentGroup);
+  }
+
+  // Generate XML
+  const bodyContent = groups.map((group) => {
+    if (group.length === 0) return '';
+
+    const first = group[0];
+    const last = group[group.length - 1];
+    
+    const pStart = formatTimestampForTTML(first.startTime);
+    const pEnd = formatTimestampForTTML(last.endTime);
+
+    // If the group has only one segment (and it's a "Line" granularity result), 
+    // we can technically still use span or just text. 
+    // The requested format uses spans, so we will generate spans for all items.
+
+    const spans = group.map((s, index) => {
+      const start = formatTimestampForTTML(s.startTime);
+      const end = formatTimestampForTTML(s.endTime);
+      let content = type === 'translated' ? (s.translatedText || '') : s.text;
+      
+      // Auto-spacing logic:
+      // If NOT CJK, and NOT the last item in the group, and DOES NOT end in space...
+      // Add a space. This makes "I" + "thought" -> "I " + "thought"
+      const isLast = index === group.length - 1;
+      if (!isCJK(content) && !isLast && !content.endsWith(' ')) {
+        content += ' ';
+      }
+      
+      return `        <span begin="${start}" end="${end}">${escapeXml(content)}</span>`;
+    }).join('\n');
+
+    return `      <p begin="${pStart}" end="${pEnd}">\n${spans}\n      </p>`;
   }).join('\n');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -119,7 +214,7 @@ export const exportAsTTML = (segments: TranscriptionSegment[], type: 'original' 
   </head>
   <body>
     <div style="defaultCaption">
-${lines}
+${bodyContent}
     </div>
   </body>
 </tt>`;
