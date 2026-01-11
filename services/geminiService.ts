@@ -112,7 +112,7 @@ function enforceMonotonicity(segments: any[]): TranscriptionSegment[] {
     // 3. Ensure duration is positive.
     // If text is present but time is squashed, give it a minimum window.
     if (end <= start) {
-      end = start + 0.1; // Minimum 100ms duration
+      end = start + 0.05; // Reduced minimum duration to 50ms for very fast speech
     }
 
     // Update trackers
@@ -198,10 +198,11 @@ export async function transcribeAudio(
     // Updated policies to strictly enforce HH:MM:SS.mmm to avoid ambiguity
     const timingPolicy = `
     STRICT TIMING & MONOTONICITY POLICY:
-    1. FORMAT: You MUST use **HH:MM:SS.mmm** (e.g. 00:00:12.500) for ALL timestamps.
-    2. ABSOLUTE TIME: Timestamps are relative to the START of the audio file (00:00:00.000). NEVER reset to 0 mid-stream.
-    3. SEQUENTIAL: Timestamps MUST strictly increase. startTime(n) must be >= startTime(n-1).
-    4. ACCURACY: Sync text exactly to when it is spoken.
+    1. FORMAT: You MUST use **HH:MM:SS.mmm** (e.g. 00:00:12.512) for ALL timestamps.
+    2. PRECISION: Do NOT round to the nearest second or 100ms. Use PRECISE milliseconds (e.g., .042, .915) matching the exact audio waveform start/end.
+    3. ABSOLUTE TIME: Timestamps are relative to the START of the audio file (00:00:00.000). NEVER reset to 0 mid-stream.
+    4. SEQUENTIAL: Timestamps MUST strictly increase. startTime(n) must be >= startTime(n-1).
+    5. ACCURACY: Sync text exactly to when it is spoken. For fast speech, timestamps must reflect the speed.
     `;
 
     const subtitlePolicy = `
@@ -213,18 +214,18 @@ export async function transcribeAudio(
     const wordLevelPolicy = `
     WORD-LEVEL (WORD MODE):
     1. SEGMENTATION: **ONE WORD PER SEGMENT**.
-    2. CONTINUITY: Ensure no large gaps between words unless there is silence.
+    2. CONTINUITY: Ensure no large gaps between words unless there is actual silence.
     3. STRICT ORDER: Do not output words out of order.
     `;
 
-    // Few-shot examples are critical for 2.5 Flash to follow formatting strictly
+    // Updated few-shot examples with realistic, non-rounded milliseconds to avoid bias
     const fewShotExamples = `
     EXAMPLE JSON OUTPUT (Word Mode):
     {
       "segments": [
-        { "startTime": "00:00:00.000", "endTime": "00:00:00.600", "text": "The" },
-        { "startTime": "00:00:00.600", "endTime": "00:00:01.100", "text": "quick" },
-        { "startTime": "00:00:01.100", "endTime": "00:00:01.800", "text": "brown" }
+        { "startTime": "00:00:00.042", "endTime": "00:00:00.589", "text": "The" },
+        { "startTime": "00:00:00.589", "endTime": "00:00:01.102", "text": "quick" },
+        { "startTime": "00:00:01.102", "endTime": "00:00:01.815", "text": "brown" }
       ]
     }
     `;
@@ -234,7 +235,9 @@ export async function transcribeAudio(
     const requestConfig: any = {
       responseMimeType: "application/json",
       responseSchema: TRANSCRIPTION_SCHEMA,
-      temperature: 0, 
+      temperature: 0,
+      topP: 0.95, // Encourage focused probability mass
+      topK: 64,   // Restrict vocabulary to likely candidates
     };
 
     if (isGemini3) {
@@ -259,7 +262,7 @@ export async function transcribeAudio(
                 },
               },
               {
-                text: `You are a high-fidelity audio transcription engine.
+                text: `You are a high-fidelity audio alignment and transcription engine expert.
                 
                 ${timingPolicy}
                 ${segmentationPolicy}
@@ -271,6 +274,7 @@ export async function transcribeAudio(
                 - Do not summarize.
                 - Output valid JSON.
                 - Ensure timestamps NEVER jump backwards.
+                - Listen carefully for fast speech; preserve millisecond-level precision.
                 
                 Audio processing...`,
               },
