@@ -506,27 +506,35 @@ export async function generateSpeech(text: string, language: string = "English")
   try {
     if (!text || text.trim().length === 0) return undefined;
 
-    const systemInstruction = `
-    You are a native speaker of ${language}. 
-    Read the following text clearly and naturally in ${language}.
-    Even if the text is a single word, pronounce it fully.
+    // NOTE: For gemini-2.5-flash-preview-tts, instructions are often better handled in the prompt
+    // rather than systemInstruction config, and responseModalities must be strictly AUDIO.
+    const promptText = `
+    Please speak the following text in ${language}. 
+    Pronounce clearly and naturally.
+    
+    Text: ${text}
     `;
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text: text }] }],
+      contents: [{ parts: [{ text: promptText }] }],
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: 'Zephyr' },
+            prebuiltVoiceConfig: { voiceName: 'Kore' }, // 'Kore' is a reliable voice from documentation
           },
         },
-        systemInstruction: systemInstruction,
       },
     });
 
-    return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    // Handle case where audio might be missing
+    const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!audioData) {
+        throw new Error("TTS generation returned no audio data.");
+    }
+    return audioData;
+
   } catch (error) {
     console.error("TTS error:", error);
     throw error;

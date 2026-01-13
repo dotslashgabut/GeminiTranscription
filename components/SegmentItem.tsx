@@ -1,4 +1,3 @@
-
 import React, { useEffect, useRef, useState } from 'react';
 import { TranscriptionSegment } from '../types';
 import { generateSpeech } from '../services/geminiService';
