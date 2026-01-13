@@ -48,10 +48,6 @@ const WORD_MODE_SCHEMA = {
             items: {
               type: Type.OBJECT,
               properties: {
-                text: { 
-                  type: Type.STRING, 
-                  description: "The single word, or character (for Chinese/Japanese/Korean), or linguistic unit." 
-                },
                 startTime: { 
                     type: Type.STRING, 
                     description: "Start time of the word in MM:SS.mmm format" 
@@ -59,13 +55,38 @@ const WORD_MODE_SCHEMA = {
                 endTime: { 
                     type: Type.STRING, 
                     description: "End time of the word in MM:SS.mmm format" 
+                },
+                text: { 
+                  type: Type.STRING, 
+                  description: "The single word, or character (for Chinese/Japanese/Korean), or linguistic unit." 
                 }
               },
-              required: ["text", "startTime", "endTime"]
+              required: ["startTime", "endTime", "text"]
             }
           }
         },
         required: ["startTime", "endTime", "text", "words"],
+      },
+    },
+  },
+  required: ["segments"],
+};
+
+// Flattened schema specifically for Gemini 3 Word Mode to reduce token complexity and improve CJK grouping
+const FLAT_WORD_MODE_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    segments: {
+      type: Type.ARRAY,
+      description: "List of all individual words/phrases in chronological order.",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          startTime: { type: Type.STRING, description: "MM:SS.mmm" },
+          endTime: { type: Type.STRING, description: "MM:SS.mmm" },
+          text: { type: Type.STRING, description: "The word or meaningful unit." },
+        },
+        required: ["startTime", "endTime", "text"],
       },
     },
   },
@@ -153,7 +174,6 @@ function tryRepairJson(jsonString: string): any {
 
   // 2. Try to fix unescaped quotes (common in "text" fields)
   // Look for: "text": "Something "quoted" here" -> "text": "Something \"quoted\" here"
-  // This is a naive heuristic but helps with common Gemini 2.5 errors
   let fixedQuotes = trimmed.replace(/"text"\s*:\s*"((?:[^"\\]|\\.)*)"/g, (match, content) => {
     return match; 
   });
@@ -178,42 +198,55 @@ function tryRepairJson(jsonString: string): any {
 
   // 4. Fallback: Aggressive Regex Scraping
   // We extract anything that looks like a segment object.
-  // This works for both flat and nested structures, though it flattens hierarchy.
   const segments: any[] = [];
   
-  // Regex to capture: "startTime": "...", "endTime": "...", "text": "..."
-  // Handles potential variation in whitespace and "start"/"end" vs "startTime"/"endTime"
-  // Also handles single quotes for keys/values if model hallucinates JSON5
-  const segmentRegex = /(?:["']start(?:Time)?["'])\s*:\s*["']([^"']+)["']\s*,\s*(?:["']end(?:Time)?["'])\s*:\s*["']([^"']+)["']\s*,\s*(?:["']text["'])\s*:\s*(?:["']((?:[^"'\\]|\\.)*)["'])/g;
+  // PATTERN A: Standard (start -> end -> text)
+  // Common in LINE mode and fixed WORD mode schema.
+  const regexStandard = /(?:["']start(?:Time)?["'])\s*:\s*["']([^"']+)["']\s*,\s*(?:["']end(?:Time)?["'])\s*:\s*["']([^"']+)["']\s*,\s*(?:["']text["'])\s*:\s*(?:["']((?:[^"'\\]|\\.)*)["'])/g;
 
-  let match;
-  // Use the original trimmed string for scraping to avoid corruption from partial fixes
-  while ((match = segmentRegex.exec(trimmed)) !== null) {
-    const rawText = match[3];
-    let unescapedText = rawText;
-    try {
-      // Try to unescape using JSON.parse
-      unescapedText = JSON.parse(`"${rawText.replace(/"/g, '\\"')}"`);
-    } catch (e) {
-      // Manual fallback unescape
-      unescapedText = rawText
-        .replace(/\\"/g, '"')
-        .replace(/\\'/g, "'")
-        .replace(/\\\\/g, "\\")
-        .replace(/\\n/g, "\n");
-    }
+  // PATTERN B: Text First (text -> start -> end)
+  // Common in some model outputs for WORD mode if schema property order is flipped.
+  const regexTextFirst = /(?:["']text["'])\s*:\s*["']((?:[^"'\\]|\\.)*)["']\s*,\s*(?:["']start(?:Time)?["'])\s*:\s*["']([^"']+)["']\s*,\s*(?:["']end(?:Time)?["'])\s*:\s*["']([^"']+)["']/g;
 
-    segments.push({
-      startTime: match[1],
-      endTime: match[2],
-      text: unescapedText
-    });
+  const runRegex = (regex: RegExp, order: 'std' | 'textFirst') => {
+     let match;
+     while ((match = regex.exec(trimmed)) !== null) {
+        let startTime, endTime, rawText;
+        if (order === 'std') {
+           startTime = match[1];
+           endTime = match[2];
+           rawText = match[3];
+        } else {
+           rawText = match[1];
+           startTime = match[2];
+           endTime = match[3];
+        }
+
+        let unescapedText = rawText;
+        try {
+          unescapedText = JSON.parse(`"${rawText.replace(/"/g, '\\"')}"`);
+        } catch (e) {
+          unescapedText = rawText
+            .replace(/\\"/g, '"')
+            .replace(/\\'/g, "'")
+            .replace(/\\\\/g, "\\")
+            .replace(/\\n/g, "\n");
+        }
+        segments.push({ startTime, endTime, text: unescapedText });
+     }
+  };
+
+  runRegex(regexStandard, 'std');
+  
+  // If standard regex found very few items (or none), try text-first.
+  // We append to existing segments or replace? 
+  // If we found segments with std, we probably shouldn't mix, but let's see.
+  // Usually the model uses one consistency.
+  if (segments.length === 0) {
+      runRegex(regexTextFirst, 'textFirst');
   }
 
   if (segments.length > 0) {
-    // If we scraped segments, we return them.
-    // Note: In Word mode, this might return both the Line container and the Words.
-    // This is acceptable as a fallback for a broken response.
     return { segments };
   }
 
@@ -230,7 +263,14 @@ export async function transcribeAudio(
 ): Promise<TranscriptionSegment[]> {
   try {
     const isGemini3 = modelName.includes('gemini-3');
-    const selectedSchema = granularity === 'word' ? WORD_MODE_SCHEMA : LINE_MODE_SCHEMA;
+    let selectedSchema = granularity === 'word' ? WORD_MODE_SCHEMA : LINE_MODE_SCHEMA;
+    
+    // For Gemini 3 in Word mode, use a FLAT schema. 
+    // This reduces nesting depth which significantly improves stability for CJK "word" generation
+    // and prevents the model from "cutting short" or getting confused by the double-nested structure.
+    if (isGemini3 && granularity === 'word') {
+      selectedSchema = FLAT_WORD_MODE_SCHEMA;
+    }
 
     const timingPolicy = `
     TIMING RULES (CRITICAL):
@@ -241,7 +281,22 @@ export async function transcribeAudio(
 
     let segmentationPolicy = "";
     if (granularity === 'word') {
-      segmentationPolicy = `
+      if (isGemini3) {
+         // Specialized instruction for Gemini 3
+         segmentationPolicy = `
+    SEGMENTATION: FLAT WORD-LEVEL (OPTIMIZED FOR GEMINI 3)
+    ---------------------------------------------------
+    1. STRUCTURE: Output a SINGLE flat list of segments. Do not nest.
+    2. SCOPE: Each segment is one "word" or "linguistic unit".
+    3. CJK HANDLING (CRITICAL): 
+       - Group Chinese/Japanese/Korean characters into MEANINGFUL WORDS (Bunsetsu/Phrases).
+       - Example: "学校" (School) is ONE word. "食べる" (Eat) is ONE word.
+       - Do NOT split compound words into individual characters (e.g. do not split "東京" into "東", "京").
+       - AIM: Natural reading units with precise start/end times.
+         `;
+      } else {
+         // Original instruction for Gemini 2.5 (Hierarchical)
+         segmentationPolicy = `
     SEGMENTATION: HIERARCHICAL WORD-LEVEL (TTML/KARAOKE)
     ---------------------------------------------------
     CRITICAL: You are generating data for rich TTML export.
@@ -250,7 +305,8 @@ export async function transcribeAudio(
     2. DETAILS: Inside each line object, you MUST provide a "words" array.
     3. WORDS: The "words" array must contain EVERY single word from that line with its own precise start/end time.
     4. CJK HANDLING: For Chinese, Japanese, or Korean scripts, treat each character (or logical block of characters) as a separate "word" for the purposes of karaoke timing.
-      `;
+         `;
+      }
     } else {
       segmentationPolicy = `
     SEGMENTATION: LINE-LEVEL (SUBTITLE/LRC MODE)
@@ -296,7 +352,7 @@ export async function transcribeAudio(
     
     GENERAL RULES:
     - Verbatim: Transcribe exactly what is heard. Include fillers (um, ah).
-    - Completeness: Transcribe from 00:00 to the very end.
+    - Completeness: Transcribe from 00:00 to the very end. Do NOT summarize.
     - JSON Only: Output pure JSON.
     `;
 
@@ -349,13 +405,16 @@ export async function transcribeAudio(
     let rawSegments = parsed.segments || [];
 
     // FLATTENING LOGIC: If Word mode, extract 'words' array to top level
+    // NOTE: If using FLAT_WORD_MODE_SCHEMA (Gemini 3), rawSegments IS ALREADY the flat list of words.
+    // The loop below will simply copy them effectively, which is safe.
     if (granularity === 'word') {
       const flattened: any[] = [];
       rawSegments.forEach((s: any) => {
         if (Array.isArray(s.words) && s.words.length > 0) {
            s.words.forEach((w: any) => flattened.push(w));
         } else {
-           // Fallback: Use segment itself if no words found
+           // Fallback / Flat Schema handling:
+           // If 'words' property is missing, we assume 's' IS the word segment (Gemini 3 case).
            flattened.push(s);
         }
       });

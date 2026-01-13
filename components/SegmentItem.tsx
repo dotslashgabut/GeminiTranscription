@@ -15,7 +15,9 @@ interface SegmentItemProps {
 const SegmentItem: React.FC<SegmentItemProps> = ({ segment, isActive, isManualSeek, onSelect, targetLanguage }) => {
   const elementRef = useRef<HTMLButtonElement>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<'original' | 'translated' | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const feedbackTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (isActive && elementRef.current && !isManualSeek) {
@@ -47,6 +49,25 @@ const SegmentItem: React.FC<SegmentItemProps> = ({ segment, isActive, isManualSe
       }
     }
   }, [isActive, isManualSeek]);
+
+  const handleCopy = async (e: React.MouseEvent, text: string, type: 'original' | 'translated') => {
+    e.stopPropagation(); // Prevent seeking when clicking to copy
+    
+    try {
+      await navigator.clipboard.writeText(text);
+      
+      if (feedbackTimeoutRef.current) {
+        window.clearTimeout(feedbackTimeoutRef.current);
+      }
+
+      setCopyFeedback(type);
+      feedbackTimeoutRef.current = window.setTimeout(() => {
+        setCopyFeedback(null);
+      }, 2000);
+    } catch (err) {
+      console.error('Failed to copy text', err);
+    }
+  };
 
   const handleSpeak = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -99,22 +120,44 @@ const SegmentItem: React.FC<SegmentItemProps> = ({ segment, isActive, isManualSe
         </span>
       </div>
       
-      {/* Transcription Text - Removed font-weight change to prevent layout shift */}
-      <p className={`text-lg md:text-xl leading-relaxed transition-colors duration-200 font-medium ${
-        isActive ? 'text-slate-900' : 'text-slate-600'
-      }`}>
-        {segment.text}
-      </p>
+      {/* Transcription Text */}
+      <div className="relative w-full group/text">
+        <p 
+          onClick={(e) => handleCopy(e, segment.text, 'original')}
+          title="Click to copy text"
+          className={`text-lg md:text-xl leading-relaxed transition-all duration-200 font-medium rounded-md -mx-1 px-1 cursor-pointer border border-transparent hover:border-slate-200 hover:bg-black/5 ${
+            isActive ? 'text-slate-900' : 'text-slate-600'
+          }`}
+        >
+          {segment.text}
+        </p>
+        {copyFeedback === 'original' && (
+          <span className="absolute -top-6 left-0 bg-slate-800 text-white text-[10px] font-bold px-2 py-0.5 rounded shadow-lg z-20 animate-bounce">
+            Copied!
+          </span>
+        )}
+      </div>
 
       {segment.translatedText && (
-        <div className={`mt-2 p-2.5 rounded-lg border flex items-start gap-3 transition-all ${
+        <div className={`mt-2 p-2.5 rounded-lg border flex items-start gap-3 transition-all relative ${
           isActive ? 'bg-white border-indigo-200 shadow-sm' : 'bg-slate-50 border-slate-100'
         }`}>
-          <p className={`text-base italic flex-1 leading-relaxed ${
-            isActive ? 'text-indigo-800 font-medium' : 'text-slate-500'
-          }`}>
+          <p 
+            onClick={(e) => handleCopy(e, segment.translatedText!, 'translated')}
+            title="Click to copy translation"
+            className={`text-base italic flex-1 leading-relaxed cursor-pointer rounded px-1 -mx-1 hover:bg-indigo-100/50 transition-colors ${
+              isActive ? 'text-indigo-800 font-medium' : 'text-slate-500'
+            }`}
+          >
             {segment.translatedText}
           </p>
+          
+          {copyFeedback === 'translated' && (
+            <span className="absolute -top-2 right-10 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded shadow-lg z-20 animate-bounce">
+              Copied!
+            </span>
+          )}
+
           <button 
             type="button"
             onClick={handleSpeak}
