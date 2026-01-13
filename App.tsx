@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { AudioFileData, TranscriptionResult, TranscriptionSegment } from './types';
 import { transcribeAudio, translateSegments, timestampToSeconds } from './services/geminiService';
@@ -404,6 +403,7 @@ const App: React.FC = () => {
             <div className="flex items-center gap-2">
               {canClear && (
                 <button 
+                  type="button"
                   onClick={handleNewSession}
                   title="New Session"
                   className="p-2 md:px-4 md:py-2 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-xl border border-slate-200 bg-white shadow-sm transition-all flex items-center gap-2"
@@ -412,7 +412,7 @@ const App: React.FC = () => {
                   <span className="hidden md:inline text-xs font-semibold">New Session</span>
                 </button>
               )}
-              <button onClick={toggleFullscreen} title="Toggle Fullscreen" className="p-2 text-slate-600 hover:bg-slate-100 rounded-xl border border-slate-200 shadow-sm bg-white">
+              <button type="button" onClick={toggleFullscreen} title="Toggle Fullscreen" className="p-2 text-slate-600 hover:bg-slate-100 rounded-xl border border-slate-200 shadow-sm bg-white">
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
               </button>
             </div>
@@ -432,6 +432,7 @@ const App: React.FC = () => {
                 className="bg-transparent text-xs md:text-sm px-2 md:px-3 py-1 outline-none flex-1 w-full text-slate-700 disabled:opacity-50"
               />
               <button 
+                type="button"
                 onClick={handleUrlLoad}
                 disabled={isFetchingUrl || !urlInput || isRecording}
                 className={`px-2 md:px-3 py-1 text-[10px] md:text-xs font-bold rounded-lg transition-all whitespace-nowrap ${isFetchingUrl || isRecording ? 'bg-slate-200 text-slate-400' : 'bg-white text-blue-600 shadow-sm hover:bg-slate-50 border border-slate-200'}`}
@@ -449,6 +450,7 @@ const App: React.FC = () => {
               onChange={handleFileUpload} 
             />
             <button 
+              type="button"
               onClick={() => fileInputRef.current?.click()} 
               disabled={isRecording}
               className={`px-3 md:px-4 py-2 text-xs md:text-sm font-semibold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 shadow-sm transition-all whitespace-nowrap ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -458,6 +460,7 @@ const App: React.FC = () => {
             
             {/* Record */}
             <button 
+              type="button"
               onClick={isRecording ? stopRecording : startRecording}
               disabled={isTranscribing}
               className={`px-3 md:px-4 py-2 text-xs md:text-sm font-semibold rounded-xl shadow-sm transition-all flex items-center gap-2 whitespace-nowrap border ${
@@ -473,6 +476,7 @@ const App: React.FC = () => {
             {/* Granularity Switch */}
             <div className="flex items-center bg-white rounded-xl border border-slate-300 overflow-hidden shadow-sm">
               <button 
+                type="button"
                 onClick={() => setGranularity('line')}
                 className={`px-3 py-2 text-xs font-semibold transition-colors ${granularity === 'line' ? 'bg-slate-100 text-slate-900' : 'text-slate-500 hover:bg-slate-50'}`}
                 disabled={isTranscribing}
@@ -481,6 +485,7 @@ const App: React.FC = () => {
               </button>
               <div className="w-px h-full bg-slate-200"></div>
               <button 
+                type="button"
                 onClick={() => setGranularity('word')}
                 className={`px-3 py-2 text-xs font-semibold transition-colors ${granularity === 'word' ? 'bg-slate-100 text-slate-900' : 'text-slate-500 hover:bg-slate-50'}`}
                 disabled={isTranscribing}
@@ -518,6 +523,7 @@ const App: React.FC = () => {
 
             {/* Transcribe Button */}
             <button
+              type="button"
               disabled={!audioFile || isTranscribing || isRecording}
               onClick={startTranscription}
               className={`px-4 md:px-6 py-2 text-xs md:text-sm font-bold text-white rounded-xl shadow-lg transition-all whitespace-nowrap flex items-center justify-center gap-2 min-w-[120px] ${
@@ -552,6 +558,7 @@ const App: React.FC = () => {
                   {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
                 </select>
                 <button
+                  type="button"
                   disabled={isTranslating || isRecording}
                   onClick={handleTranslate}
                   className={`px-3 md:px-5 py-2 text-xs md:text-sm font-bold text-white rounded-xl shadow-lg transition-all whitespace-nowrap flex items-center justify-center gap-2 min-w-[100px] ${
@@ -628,6 +635,7 @@ const App: React.FC = () => {
                         {['TXT', 'SRT', 'LRC', 'TTML', 'JSON'].map(format => (
                           <button 
                             key={format} 
+                            type="button"
                             onClick={() => handleDownload(side, format, 'original')} 
                             className="px-2 py-0.5 text-[9px] font-black border border-slate-200 rounded bg-white hover:bg-slate-50 text-slate-600 shadow-sm transition-all whitespace-nowrap"
                           >
@@ -641,6 +649,7 @@ const App: React.FC = () => {
                           {['TXT', 'SRT', 'LRC', 'TTML', 'JSON'].map(format => (
                             <button 
                               key={format} 
+                              type="button"
                               onClick={() => handleDownload(side, format, 'translated')} 
                               className="px-2 py-0.5 text-[9px] font-black border border-indigo-100 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-600 shadow-sm transition-all whitespace-nowrap"
                             >
@@ -660,6 +669,7 @@ const App: React.FC = () => {
                           side === 'left' ? 'border-blue-100 border-t-blue-500' : 'border-indigo-100 border-t-indigo-500'
                       }`}></div>
                       <button 
+                        type="button"
                         onClick={() => stopTranscription(side)}
                         className="mt-6 px-4 py-1.5 bg-white border border-red-100 text-red-500 text-[10px] font-bold rounded-full hover:bg-red-50 transition-colors uppercase tracking-wide"
                       >

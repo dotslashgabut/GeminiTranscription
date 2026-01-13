@@ -1,8 +1,10 @@
+
 export interface TranscriptionSegment {
   startTime: string; // Format like "00:00:00" or seconds
   endTime: string;
   text: string;
   translatedText?: string;
+  words?: TranscriptionSegment[];
 }
 
 export interface TranscriptionResult {
@@ -28,4 +30,17 @@ export interface SubtitleSegment {
   end: number;
   text: string;
   words?: SubtitleSegment[];
+}
+
+export interface LyricWord {
+  text: string;
+  startTime: number;
+  endTime: number;
+}
+
+export interface LyricLine {
+  time: number;
+  text: string;
+  endTime?: number;
+  words?: LyricWord[];
 }
