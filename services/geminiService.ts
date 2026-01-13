@@ -14,15 +14,15 @@ const TRANSCRIPTION_SCHEMA = {
         properties: {
           startTime: {
             type: Type.STRING,
-            description: "Absolute timestamp in 'HH:MM:SS.mmm' format (e.g. '00:00:41.520').",
+            description: "Timestamp in 'MM:SS.mmm' format (e.g. '00:41.520').",
           },
           endTime: {
             type: Type.STRING,
-            description: "Absolute timestamp in 'HH:MM:SS.mmm' format.",
+            description: "Timestamp in 'MM:SS.mmm' format.",
           },
           text: {
             type: Type.STRING,
-            description: "Transcribed text. Exact words spoken.",
+            description: "Transcribed text. Exact words spoken in their native script.",
           },
         },
         required: ["startTime", "endTime", "text"],
@@ -35,15 +35,21 @@ const TRANSCRIPTION_SCHEMA = {
 /**
  * Converts various timestamp strings to seconds with high robustness.
  * Handles:
- * - HH:MM:SS.mmm
- * - MM:SS.mmm
- * - HH:MM:SS:mmm (hallucination)
- * - SS.mmm
+ * - MM:SS.mmm (Preferred)
+ * - HH:MM:SS.mmm (Fallback)
+ * - Full-width characters (CJK)
+ * - Numeric inputs (seconds)
  */
-export function timestampToSeconds(ts: string): number {
-  if (!ts) return 0;
+export function timestampToSeconds(ts: string | number): number {
+  if (ts === undefined || ts === null) return 0;
+  let str = String(ts).trim();
+
+  // Normalize full-width characters (numbers ０-９ and colon ：) commonly found in CJK output
+  str = str.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
+  str = str.replace(/：/g, ':');
+
   // Normalize: replace comma with dot, remove everything else except digits, dots, colons
-  const clean = ts.trim().replace(/,/g, '.').replace(/[^\d:.]/g, '');
+  const clean = str.replace(/,/g, '.').replace(/[^\d:.]/g, '');
   
   if (!clean.includes(':')) {
     return parseFloat(clean) || 0;
@@ -51,7 +57,7 @@ export function timestampToSeconds(ts: string): number {
 
   const parts = clean.split(':').map(p => parseFloat(p) || 0);
   
-  // Handle HH:MM:SS:mmm (4 parts) - rare hallucination where colon is used for ms
+  // Handle HH:MM:SS:mmm (4 parts) - rare hallucination
   if (parts.length === 4) {
     return (parts[0] * 3600) + (parts[1] * 60) + parts[2] + (parts[3] / 1000);
   }
@@ -61,7 +67,7 @@ export function timestampToSeconds(ts: string): number {
     return (parts[0] * 3600) + (parts[1] * 60) + parts[2];
   }
   
-  // Handle MM:SS.mmm (2 parts)
+  // Handle MM:SS.mmm (2 parts) - Preferred
   if (parts.length === 2) {
     return (parts[0] * 60) + parts[1];
   }
@@ -70,16 +76,16 @@ export function timestampToSeconds(ts: string): number {
 }
 
 /**
- * Formats seconds back to HH:MM:SS.mmm correctly handling rounding.
+ * Formats seconds to MM:SS.mmm correctly handling rounding.
+ * Note: Minutes can exceed 59 (e.g. 90:00.000 for 1.5 hours) to strictly follow MM:SS format.
  */
 function secondsToTimestamp(totalSeconds: number): string {
   const roundedMs = Math.round(totalSeconds * 1000);
-  const h = Math.floor(roundedMs / 3600000);
-  const m = Math.floor((roundedMs % 3600000) / 60000);
+  const m = Math.floor(roundedMs / 60000);
   const s = Math.floor((roundedMs % 60000) / 1000);
   const ms = roundedMs % 1000;
   
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
 }
 
 /**
@@ -99,7 +105,6 @@ function enforceMonotonicity(segments: any[]): TranscriptionSegment[] {
     // 1. Fix backward jumps (Model hallucination or reset)
     // If start time jumps back significantly compared to last end, clamp it.
     // We use a small tolerance (0.1s) to allow minor overlaps which are natural in speech.
-    // NOTE: This specifically fixes the "reset to 0" bug in some models.
     if (start < lastEndTime - 0.1) {
       start = lastEndTime;
     }
@@ -110,7 +115,6 @@ function enforceMonotonicity(segments: any[]): TranscriptionSegment[] {
     }
 
     // 3. Ensure duration is positive.
-    // If text is present but time is squashed, give it a minimum window.
     if (end <= start) {
       end = start + 0.05; // Reduced minimum duration to 50ms for very fast speech
     }
@@ -190,19 +194,30 @@ export async function transcribeAudio(
   audioBase64: string,
   mimeType: string,
   signal?: AbortSignal,
-  granularity: 'line' | 'word' = 'line'
+  granularity: 'line' | 'word' = 'line',
+  languageHint: string = ""
 ): Promise<TranscriptionSegment[]> {
   try {
     const isGemini3 = modelName.includes('gemini-3');
     
-    // Updated policies to strictly enforce HH:MM:SS.mmm to avoid ambiguity
+    // Updated policies to strictly enforce MM:SS.mmm and prevent CJK width issues
     const timingPolicy = `
     STRICT TIMING & MONOTONICITY POLICY:
-    1. FORMAT: You MUST use **HH:MM:SS.mmm** (e.g. 00:00:12.512) for ALL timestamps.
-    2. PRECISION: Do NOT round to the nearest second or 100ms. Use PRECISE milliseconds (e.g., .042, .915) matching the exact audio waveform start/end.
-    3. ABSOLUTE TIME: Timestamps are relative to the START of the audio file (00:00:00.000). NEVER reset to 0 mid-stream.
-    4. SEQUENTIAL: Timestamps MUST strictly increase. startTime(n) must be >= startTime(n-1).
-    5. ACCURACY: Sync text exactly to when it is spoken. For fast speech, timestamps must reflect the speed.
+    1. FORMAT: You MUST use **MM:SS.mmm** (e.g. 00:12.512, 05:30.900) for ALL timestamps.
+    2. NO HOURS: Do NOT use HH:MM:SS format. If time > 60 mins, use 65:00.000.
+    3. DIGITS: USE STANDARD ASCII DIGITS (0-9). DO NOT use full-width characters (e.g. ０, １).
+    4. PRECISION: Do NOT round. Use PRECISE milliseconds (e.g., .042, .915) matching the exact audio waveform.
+    5. CONTINUITY: Timestamps are relative to the start (00:00.000). Never reset.
+    6. ACCURACY: Sync text exactly.
+    `;
+
+    const mixedLanguagePolicy = `
+    RAPID CODE-SWITCHING (CRITICAL):
+    - Audio may contain multiple languages mixed in the SAME sentence.
+    - BEWARE: The languages might NOT include English. (e.g. Indonesian + Japanese, Chinese + Japanese).
+    - DETECT LANGUAGE AT THE WORD LEVEL. Treat all languages as equally probable.
+    - WRITE EACH WORD IN ITS NATIVE SCRIPT. (e.g. "Aku cinta kamu" -> Latin, "愛してる" -> Kanji).
+    - DO NOT translate. DO NOT romanize. DO NOT force English if it's not spoken.
     `;
 
     const subtitlePolicy = `
@@ -218,19 +233,20 @@ export async function transcribeAudio(
     3. STRICT ORDER: Do not output words out of order.
     `;
 
-    // Updated few-shot examples with realistic, non-rounded milliseconds to avoid bias
+    // Updated few-shot examples to MM:SS.mmm
     const fewShotExamples = `
     EXAMPLE JSON OUTPUT (Word Mode):
     {
       "segments": [
-        { "startTime": "00:00:00.042", "endTime": "00:00:00.589", "text": "The" },
-        { "startTime": "00:00:00.589", "endTime": "00:00:01.102", "text": "quick" },
-        { "startTime": "00:00:01.102", "endTime": "00:00:01.815", "text": "brown" }
+        { "startTime": "00:00.042", "endTime": "00:00.589", "text": "The" },
+        { "startTime": "00:00.589", "endTime": "00:01.102", "text": "quick" },
+        { "startTime": "00:01.102", "endTime": "00:01.815", "text": "brown" }
       ]
     }
     `;
 
     const segmentationPolicy = granularity === 'word' ? wordLevelPolicy : subtitlePolicy;
+    const contextPrompt = languageHint ? `CONTEXT & LANGUAGE HINT: The audio contains the following languages/content: "${languageHint}". Pay extra attention to these languages.` : "";
 
     const requestConfig: any = {
       responseMimeType: "application/json",
@@ -264,7 +280,10 @@ export async function transcribeAudio(
               {
                 text: `You are a high-fidelity audio alignment and transcription engine expert.
                 
+                ${contextPrompt}
+
                 ${timingPolicy}
+                ${mixedLanguagePolicy}
                 ${segmentationPolicy}
                 
                 ${fewShotExamples}
@@ -299,7 +318,7 @@ export async function transcribeAudio(
     const parsed = tryRepairJson(text);
     const rawSegments = parsed.segments || [];
 
-    // Apply strict post-processing to fix jumping timestamps
+    // Apply strict post-processing
     return enforceMonotonicity(rawSegments);
 
   } catch (error: any) {

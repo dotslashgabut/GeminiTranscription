@@ -84,6 +84,10 @@ const escapeXml = (unsafe: string): string => {
   });
 };
 
+const isCJKChar = (char: string): boolean => {
+  return /[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(char);
+};
+
 const isCJK = (text: string): boolean => {
   return /[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(text);
 };
@@ -182,21 +186,35 @@ export const exportAsTTML = (segments: TranscriptionSegment[], type: 'original' 
     const pStart = formatTimestampForTTML(first.startTime);
     const pEnd = formatTimestampForTTML(last.endTime);
 
-    // If the group has only one segment (and it's a "Line" granularity result), 
-    // we can technically still use span or just text. 
-    // The requested format uses spans, so we will generate spans for all items.
-
     const spans = group.map((s, index) => {
       const start = formatTimestampForTTML(s.startTime);
       const end = formatTimestampForTTML(s.endTime);
       let content = type === 'translated' ? (s.translatedText || '') : s.text;
       
-      // Auto-spacing logic:
-      // If NOT CJK, and NOT the last item in the group, and DOES NOT end in space...
-      // Add a space. This makes "I" + "thought" -> "I " + "thought"
+      // Mixed-Language Auto-Spacing Logic:
+      // We want to add a space unless we are transitioning between two CJK characters.
+      // - CJK followed by CJK -> No space.
+      // - Latin followed by Latin -> Space.
+      // - Latin followed by CJK -> Space (aesthetic preference for readability).
+      // - CJK followed by Latin -> Space (aesthetic preference for readability).
+      
       const isLast = index === group.length - 1;
-      if (!isCJK(content) && !isLast && !content.endsWith(' ')) {
-        content += ' ';
+      
+      if (!isLast && !content.endsWith(' ')) {
+        const nextContent = type === 'translated' 
+          ? (group[index + 1].translatedText || '') 
+          : group[index + 1].text;
+        
+        const lastChar = content.slice(-1);
+        const nextChar = nextContent.trim().charAt(0);
+
+        // If BOTH are CJK, don't add space.
+        // If either is NOT CJK (e.g. Latin), add space.
+        const isBoundaryCJK = isCJKChar(lastChar) && isCJKChar(nextChar);
+        
+        if (!isBoundaryCJK) {
+          content += ' ';
+        }
       }
       
       return `        <span begin="${start}" end="${end}">${escapeXml(content)}</span>`;

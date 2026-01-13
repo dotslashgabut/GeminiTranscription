@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { AudioFileData, TranscriptionResult, TranscriptionSegment } from './types';
 import { transcribeAudio, translateSegments, timestampToSeconds } from './services/geminiService';
@@ -67,6 +68,7 @@ const App: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [granularity, setGranularity] = useState<'line' | 'word'>('line');
   const [modelSelection, setModelSelection] = useState<ModelSelection>('both');
+  const [languageHint, setLanguageHint] = useState("");
   
   // Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -227,6 +229,7 @@ const App: React.FC = () => {
 
     setAudioFile(null);
     setUrlInput("");
+    setLanguageHint("");
     setCurrentTime(0);
     setResults({
       left: { modelName: 'gemini-2.5-flash', segments: [], loading: false },
@@ -307,7 +310,8 @@ const App: React.FC = () => {
           audioFile.base64, 
           audioFile.mimeType,
           controller.signal,
-          granularity
+          granularity,
+          languageHint
         );
         setResults(prev => ({ ...prev, [side]: { ...prev[side], segments, loading: false } }));
       } catch (err: any) {
@@ -479,6 +483,19 @@ const App: React.FC = () => {
               >
                 Word
               </button>
+            </div>
+
+            {/* Language Hint Input */}
+            <div className="flex items-center bg-white rounded-xl border border-slate-300 px-2 py-1 shadow-sm w-full md:w-auto">
+                <input 
+                  type="text" 
+                  value={languageHint}
+                  onChange={(e) => setLanguageHint(e.target.value)}
+                  placeholder="Mixed Lang Hint (e.g. Jpn/Eng)"
+                  disabled={isTranscribing}
+                  className="bg-transparent text-xs md:text-sm px-1 py-1 outline-none w-full md:w-48 text-slate-700 disabled:opacity-50"
+                  title="Provide a hint for mixed languages (e.g., 'Japanese mixed with English')"
+                />
             </div>
 
             <div className="w-px h-6 bg-slate-300 mx-1 hidden lg:block"></div>
