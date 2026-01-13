@@ -350,7 +350,11 @@ const App: React.FC = () => {
       right: { ...prev.right, translating: true }
     }));
     const runTranslate = async (side: 'left' | 'right') => {
-      if (results[side].segments.length === 0) return;
+      // FIX: If no segments to translate, stop loading immediately
+      if (results[side].segments.length === 0) {
+        setResults(prev => ({ ...prev, [side]: { ...prev[side], translating: false } }));
+        return;
+      }
       try {
         const translated = await translateSegments(results[side].segments, targetLang);
         setResults(prev => ({ ...prev, [side]: { ...prev[side], segments: translated, translating: false } }));
@@ -671,6 +675,7 @@ const App: React.FC = () => {
                           isActive={activeIdx === idx}
                           isManualSeek={lastInteractedSide === side}
                           onSelect={(ts) => handleSegmentClick(ts, side)}
+                          targetLanguage={targetLang}
                         />
                       ))}
                     </div>

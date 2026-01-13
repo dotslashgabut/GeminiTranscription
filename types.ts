@@ -1,4 +1,3 @@
-
 export interface TranscriptionSegment {
   startTime: string; // Format like "00:00:00" or seconds
   endTime: string;
@@ -19,4 +18,14 @@ export interface AudioFileData {
   mimeType: string;
   fileName: string;
   previewUrl: string;
+}
+
+export type GeminiModel = string;
+export type TranscriptionMode = 'line' | 'word';
+
+export interface SubtitleSegment {
+  start: number;
+  end: number;
+  text: string;
+  words?: SubtitleSegment[];
 }

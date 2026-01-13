@@ -9,9 +9,10 @@ interface SegmentItemProps {
   isActive?: boolean;
   isManualSeek?: boolean;
   onSelect: (startTime: string) => void;
+  targetLanguage?: string;
 }
 
-const SegmentItem: React.FC<SegmentItemProps> = ({ segment, isActive, isManualSeek, onSelect }) => {
+const SegmentItem: React.FC<SegmentItemProps> = ({ segment, isActive, isManualSeek, onSelect, targetLanguage }) => {
   const elementRef = useRef<HTMLButtonElement>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -54,7 +55,7 @@ const SegmentItem: React.FC<SegmentItemProps> = ({ segment, isActive, isManualSe
 
     setIsSpeaking(true);
     try {
-      const audioData = await generateSpeech(segment.translatedText);
+      const audioData = await generateSpeech(segment.translatedText, targetLanguage);
       if (!audioData) throw new Error("No audio data");
 
       if (!audioContextRef.current) {

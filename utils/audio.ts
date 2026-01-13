@@ -15,13 +15,17 @@ export async function decodeAudioData(
   sampleRate: number,
   numChannels: number,
 ): Promise<AudioBuffer> {
-  const dataInt16 = new Int16Array(data.buffer);
+  // CRITICAL FIX: Uint8Array might be a view into a larger buffer.
+  // We must respect byteOffset and byteLength when creating Int16Array view.
+  const dataInt16 = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2);
+  
   const frameCount = dataInt16.length / numChannels;
   const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
 
   for (let channel = 0; channel < numChannels; channel++) {
     const channelData = buffer.getChannelData(channel);
     for (let i = 0; i < frameCount; i++) {
+      // Convert PCM 16-bit int to float [-1.0, 1.0]
       channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
     }
   }
