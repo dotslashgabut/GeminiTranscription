@@ -279,6 +279,15 @@ export async function transcribeAudio(
     3. ACCURACY: Sync text exactly to the audio.
     `;
 
+    // Stronger instruction to prevent "lazy" summarization of repeated lyrics
+    const completenessPolicy = `
+    COMPLETENESS & REPETITION (HIGHEST PRIORITY):
+    1. EXHAUSTIVE TRANSCRIPTION: You MUST transcribe 100% of the spoken audio.
+    2. NO DEDUPLICATION: If a phrase is repeated multiple times (e.g. "Yeah yeah yeah"), you MUST output SEPARATE segments for EACH occurrence.
+    3. NO SUMMARIZATION: Never use placeholders like "(chorus repeats)", "...", or "x3".
+    4. REPEATED LINES: Even if line 2 is identical to line 1, transcribe it again with its own timestamps.
+    `;
+
     let segmentationPolicy = "";
     if (granularity === 'word') {
       if (isGemini3) {
@@ -286,38 +295,34 @@ export async function transcribeAudio(
          segmentationPolicy = `
     SEGMENTATION: FLAT WORD-LEVEL (OPTIMIZED FOR GEMINI 3)
     ---------------------------------------------------
-    1. STRUCTURE: Output a SINGLE flat list of segments. Do not nest.
-    2. SCOPE: Each segment is one "word" or "linguistic unit".
-    3. CJK HANDLING (CRITICAL): 
-       - Group Chinese/Japanese/Korean characters into MEANINGFUL WORDS (Bunsetsu/Phrases).
-       - Example: "学校" (School) is ONE word. "食べる" (Eat) is ONE word.
-       - Do NOT split compound words into individual characters (e.g. do not split "東京" into "東", "京").
-       - AIM: Natural reading units with precise start/end times.
+    1. STRUCTURE: Output a SINGLE flat list of segments.
+    2. DEFINITION: A "segment" is a SEMANTIC WORD, not a syllable.
+    3. CJK (Chinese/Japanese/Korean) STRICT HANDLING: 
+       - **DO NOT** split compound words (Jukugo/Hanja-eo) into individual characters.
+       - **BAD**: "東", "京" (Splitting compound).
+       - **GOOD**: "東京" (Kept as one word).
+       - **BAD**: "食", "べ", "る" (Splitting verb parts excessively).
+       - **GOOD**: "食べる" (Kept as one semantic unit).
+       - Aim for "Bunsetsu" or Dictionary Word granularity to ensure readable timestamps (>0.2s).
          `;
       } else {
          // Original instruction for Gemini 2.5 (Hierarchical)
          segmentationPolicy = `
     SEGMENTATION: HIERARCHICAL WORD-LEVEL (TTML/KARAOKE)
     ---------------------------------------------------
-    CRITICAL: You are generating data for rich TTML export.
-    
-    1. STRUCTURE: Group words into natural lines/phrases (this is the parent object).
-    2. DETAILS: Inside each line object, you MUST provide a "words" array.
-    3. WORDS: The "words" array must contain EVERY single word from that line with its own precise start/end time.
-    4. CJK HANDLING: For Chinese, Japanese, or Korean scripts, treat each character (or logical block of characters) as a separate "word" for the purposes of karaoke timing.
+    1. PARENT: Group words into natural lines/phrases.
+    2. CHILDREN ("words"): 
+       - For CJK: Split by LEXICAL WORD, not character.
+       - Do NOT output per-character timestamps for multi-character compounds (e.g. "Sensei" is "先生", 1 word, not 2).
          `;
       }
     } else {
       segmentationPolicy = `
     SEGMENTATION: LINE-LEVEL (SUBTITLE/LRC MODE)
     ---------------------------------------------------
-    CRITICAL: You are generating subtitles for a movie/music video.
-
     1. PHRASES: Group words into complete sentences or musical phrases.
-    2. CLARITY: Do not break a sentence in the middle unless there is a pause.
-    3. REPETITIONS: Separate repetitive vocalizations (e.g. "Oh oh oh") from the main lyrics into their own lines.
-    4. LENGTH: Keep segments between 2 and 6 seconds for readability.
-    5. WORDS ARRAY: You may omit the "words" array in this mode to save tokens.
+    2. REPETITION: Put each repeated vocalization on a NEW line if it has a distinct rhythm.
+    3. COMPLETENESS: Capture every single repeated line ("Baby, baby, baby" -> 3 occurrences).
       `;
     }
 
@@ -330,29 +335,27 @@ export async function transcribeAudio(
     TASK: Transcribe the audio file into JSON segments.
     MODE: ${granularity.toUpperCase()} LEVEL.
     
+    ${completenessPolicy}
     ${timingPolicy}
     ${segmentationPolicy}
     ${hints}
 
     LANGUAGE HANDLING (CRITICAL):
     1. RAPID CODE-SWITCHING: Audio often contains multiple languages mixed within the SAME sentence.
-    2. MULTI-LINGUAL EQUALITY: The languages might NOT include English (e.g. Indonesian mixed with Japanese, Chinese mixed with Japanese). Treat all detected languages as equally probable.
+    2. MULTI-LINGUAL EQUALITY: The languages might NOT include English. Treat all detected languages as equally probable.
     3. WORD-LEVEL DETECTION: Detect the language of every individual word.
     4. NATIVE SCRIPT STRICTNESS: Write EACH word in its native script.
        - Example: "Aku cinta kamu" (Indonesian) -> Latin.
        - Example: "愛してる" (Japanese) -> Kanji/Kana.
-    5. MIXED SCRIPT PRESERVATION (IMPORTANT):
-       - If specific English/Latin words are spoken amidst Japanese/Chinese/etc., KEEP them in LATIN script.
-       - DO NOT transliterate English words into Katakana (e.g. if audio says "I love you", write "I love you", NOT "アイラブユー").
-       - Maintain mixed text (Kanji/Kana + Latin) exactly as spoken.
+    5. MIXED SCRIPT PRESERVATION:
+       - Keep English words in Latin script even if surrounded by CJK.
+       - DO NOT transliterate unless explicitly spelled out.
     6. PROHIBITIONS:
        - DO NOT translate.
-       - DO NOT romanize (unless explicitly spelled out).
-       - DO NOT force English if it is not spoken.
+       - DO NOT romanize.
     
     GENERAL RULES:
-    - Verbatim: Transcribe exactly what is heard. Include fillers (um, ah).
-    - Completeness: Transcribe from 00:00 to the very end. Do NOT summarize.
+    - Verbatim: Transcribe exactly what is heard. Include fillers (um, ah) and stutters.
     - JSON Only: Output pure JSON.
     `;
 
@@ -364,7 +367,8 @@ export async function transcribeAudio(
     };
 
     if (isGemini3) {
-      requestConfig.thinkingConfig = { thinkingBudget: 1024 }; 
+      // Increased budget to allow for more processing of repetitive structures without skipping
+      requestConfig.thinkingConfig = { thinkingBudget: 2048 }; 
     }
 
     const abortPromise = new Promise<never>((_, reject) => {
