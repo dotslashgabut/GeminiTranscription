@@ -377,6 +377,7 @@ const App: React.FC = () => {
       case 'TXT': content = Exporters.exportAsTXT(segments, type); break;
       case 'JSON': content = Exporters.exportAsJSON(segments, type); break;
       case 'SRT': content = Exporters.exportAsSRT(segments, type); break;
+      case 'VTT': content = Exporters.exportAsVTT(segments, type); break;
       case 'LRC': content = Exporters.exportAsLRC(segments, type, totalDuration); break;
       case 'TTML': content = Exporters.exportAsTTML(segments, type); break;
     }
@@ -632,7 +633,7 @@ const App: React.FC = () => {
                     <div className="flex flex-col gap-1.5 overflow-hidden">
                       <div className="flex items-center gap-2 overflow-x-auto pb-0.5 no-scrollbar">
                         <span className="text-[8px] font-bold text-slate-400 uppercase min-w-[32px]">Orig:</span>
-                        {['TXT', 'SRT', 'LRC', 'TTML', 'JSON'].map(format => (
+                        {['TXT', 'SRT', 'VTT', 'LRC', 'TTML', 'JSON'].map(format => (
                           <button 
                             key={format} 
                             type="button"
@@ -646,7 +647,7 @@ const App: React.FC = () => {
                       {hasTranslated && (
                         <div className="flex items-center gap-2 overflow-x-auto pb-0.5 no-scrollbar">
                           <span className="text-[8px] font-bold text-indigo-400 uppercase min-w-[32px]">Tran:</span>
-                          {['TXT', 'SRT', 'LRC', 'TTML', 'JSON'].map(format => (
+                          {['TXT', 'SRT', 'VTT', 'LRC', 'TTML', 'JSON'].map(format => (
                             <button 
                               key={format} 
                               type="button"

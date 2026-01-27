@@ -1,4 +1,3 @@
-
 import { TranscriptionSegment } from "../types";
 
 /**
@@ -27,6 +26,16 @@ const formatSecondsToSRT = (totalSeconds: number): string => {
   const ms = roundedMs % 1000;
   
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+};
+
+const formatSecondsToVTT = (totalSeconds: number): string => {
+  const roundedMs = Math.round(totalSeconds * 1000);
+  const h = Math.floor(roundedMs / 3600000);
+  const m = Math.floor((roundedMs % 3600000) / 60000);
+  const s = Math.floor((roundedMs % 60000) / 1000);
+  const ms = roundedMs % 1000;
+  
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
 };
 
 const formatSecondsToLRC = (totalSeconds: number): string => {
@@ -88,10 +97,6 @@ const isCJKChar = (char: string): boolean => {
   return /[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(char);
 };
 
-const isCJK = (text: string): boolean => {
-  return /[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(text);
-};
-
 export const downloadFile = (content: string, filename: string) => {
   const blob = new Blob([content], { type: 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
@@ -117,6 +122,72 @@ export const exportAsSRT = (segments: TranscriptionSegment[], type: 'original' |
     const end = formatSecondsToSRT(parseTimestampToSeconds(s.endTime));
     return `${i + 1}\n${start} --> ${end}\n${text}\n`;
   }).join('\n');
+};
+
+export const exportAsVTT = (segments: TranscriptionSegment[], type: 'original' | 'translated'): string => {
+  // Logic to group individual segments (words/phrases) into readable cues
+  const groups: TranscriptionSegment[][] = [];
+  let currentGroup: TranscriptionSegment[] = [];
+
+  segments.forEach((s) => {
+    if (currentGroup.length === 0) {
+      currentGroup.push(s);
+      return;
+    }
+
+    const prev = currentGroup[currentGroup.length - 1];
+    const prevEnd = parseTimestampToSeconds(prev.endTime);
+    const currStart = parseTimestampToSeconds(s.startTime);
+    const prevText = type === 'translated' ? (prev.translatedText || prev.text) : prev.text;
+    
+    const isSentenceEnd = /[.!?。！？]$/.test(prevText.trim());
+    const isPause = (currStart - prevEnd) > 0.8;
+    const currentChars = currentGroup.reduce((acc, seg) => acc + (type === 'translated' ? (seg.translatedText || '').length : seg.text.length), 0);
+    const isLong = currentChars > 45;
+    const isModeratePause = (currStart - prevEnd) > 0.3;
+    const hasComma = /[,，]$/.test(prevText.trim());
+
+    if (isSentenceEnd || isPause || (isLong && (isModeratePause || hasComma))) {
+      groups.push(currentGroup);
+      currentGroup = [s];
+    } else {
+      currentGroup.push(s);
+    }
+  });
+  
+  if (currentGroup.length > 0) groups.push(currentGroup);
+
+  const bodyContent = groups.map((group) => {
+    const first = group[0];
+    const last = group[group.length - 1];
+    const start = formatSecondsToVTT(parseTimestampToSeconds(first.startTime));
+    const end = formatSecondsToVTT(parseTimestampToSeconds(last.endTime));
+
+    const content = group.map((s, index) => {
+      const wordStart = formatSecondsToVTT(parseTimestampToSeconds(s.startTime));
+      let text = type === 'translated' ? (s.translatedText || '') : s.text;
+      
+      // Auto-spacing for mixed language
+      const isLast = index === group.length - 1;
+      if (!isLast && !text.endsWith(' ')) {
+        const nextContent = type === 'translated' ? (group[index + 1].translatedText || '') : group[index + 1].text;
+        if (!isCJKChar(text.slice(-1)) || !isCJKChar(nextContent.trim().charAt(0))) {
+          text += ' ';
+        }
+      }
+
+      // Add intra-line timestamps for original word-mode results
+      const isWordMode = segments.length > 0 && !segments[0].text.includes(' '); // Heuristic check
+      if (type === 'original' && segments.length > 10) { // Assume word mode if many segments
+         return `<${wordStart}>${text}`;
+      }
+      return text;
+    }).join('');
+
+    return `${start} --> ${end}\n${content}`;
+  }).join('\n\n');
+
+  return `WEBVTT\n\n${bodyContent}`;
 };
 
 export const exportAsLRC = (segments: TranscriptionSegment[], type: 'original' | 'translated', totalDuration?: number): string => {
@@ -148,17 +219,9 @@ export const exportAsTTML = (segments: TranscriptionSegment[], type: 'original' 
     const prevEnd = parseTimestampToSeconds(prev.endTime);
     const currStart = parseTimestampToSeconds(s.startTime);
     
-    // Determine text content for logic
     const prevText = type === 'translated' ? (prev.translatedText || prev.text) : prev.text;
-    
-    // Breaking logic:
-    // 1. Strong punctuation at end of previous segment (. ? ! )
     const isSentenceEnd = /[.!?。！？]$/.test(prevText.trim());
-    
-    // 2. Time gap (Pause) > 0.8s
     const isPause = (currStart - prevEnd) > 0.8;
-    
-    // 3. Line length limits. If current line > 45 chars, look for any punctuation or moderate pause to break.
     const currentChars = currentGroup.reduce((acc, seg) => acc + (type === 'translated' ? (seg.translatedText || '').length : seg.text.length), 0);
     const isLong = currentChars > 45;
     const isModeratePause = (currStart - prevEnd) > 0.3;
@@ -191,13 +254,6 @@ export const exportAsTTML = (segments: TranscriptionSegment[], type: 'original' 
       const end = formatTimestampForTTML(s.endTime);
       let content = type === 'translated' ? (s.translatedText || '') : s.text;
       
-      // Mixed-Language Auto-Spacing Logic:
-      // We want to add a space unless we are transitioning between two CJK characters.
-      // - CJK followed by CJK -> No space.
-      // - Latin followed by Latin -> Space.
-      // - Latin followed by CJK -> Space (aesthetic preference for readability).
-      // - CJK followed by Latin -> Space (aesthetic preference for readability).
-      
       const isLast = index === group.length - 1;
       
       if (!isLast && !content.endsWith(' ')) {
@@ -207,9 +263,6 @@ export const exportAsTTML = (segments: TranscriptionSegment[], type: 'original' 
         
         const lastChar = content.slice(-1);
         const nextChar = nextContent.trim().charAt(0);
-
-        // If BOTH are CJK, don't add space.
-        // If either is NOT CJK (e.g. Latin), add space.
         const isBoundaryCJK = isCJKChar(lastChar) && isCJKChar(nextChar);
         
         if (!isBoundaryCJK) {
