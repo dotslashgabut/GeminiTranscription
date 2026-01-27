@@ -36,10 +36,12 @@ export const parseTimestamp = (timestamp: string | number): number => {
 
 /**
  * Ensures the correct MIME type is sent to Gemini based on file extension.
+ * Supports both Audio and Video formats for audio extraction.
  */
 const getCorrectMimeType = (filename: string, originalType: string): string => {
   const ext = filename.split('.').pop()?.toLowerCase();
   switch (ext) {
+    // Audio
     case 'mp3': return 'audio/mp3';
     case 'wav': return 'audio/wav';
     case 'flac': return 'audio/flac';
@@ -47,8 +49,14 @@ const getCorrectMimeType = (filename: string, originalType: string): string => {
     case 'ogg': case 'oga': return 'audio/ogg';
     case 'm4a': return 'audio/mp4';
     case 'aiff': case 'aif': return 'audio/aiff';
-    case 'webm': return 'audio/webm';
     case 'opus': return 'audio/ogg';
+    // Video (Gemini extracts audio from these)
+    case 'mp4': return 'video/mp4';
+    case 'mov': return 'video/quicktime';
+    case 'mpeg': return 'video/mpeg';
+    case 'avi': return 'video/x-msvideo';
+    case 'mkv': return 'video/x-matroska';
+    case 'webm': return originalType.startsWith('video/') ? 'video/webm' : 'audio/webm';
   }
   if (originalType && (originalType.startsWith('audio/') || originalType.startsWith('video/'))) {
     return originalType;
@@ -138,13 +146,13 @@ const App: React.FC = () => {
     setIsFetchingUrl(true);
     try {
       const response = await fetch(urlInput);
-      if (!response.ok) throw new Error('Failed to fetch audio from URL.');
+      if (!response.ok) throw new Error('Failed to fetch media from URL.');
       
       const blob = await response.blob();
       const reader = new FileReader();
       reader.onloadend = () => {
         const base64 = (reader.result as string).split(',')[1];
-        const fileName = urlInput.split('/').pop()?.split('?')[0] || 'remote-audio';
+        const fileName = urlInput.split('/').pop()?.split('?')[0] || 'remote-media';
         const mimeType = getCorrectMimeType(fileName, blob.type);
         setAudioFile({
           base64,
@@ -157,7 +165,7 @@ const App: React.FC = () => {
       };
       reader.readAsDataURL(blob);
     } catch (error: any) {
-      alert(`Error loading audio URL: ${error.message}`);
+      alert(`Error loading media URL: ${error.message}`);
       setIsFetchingUrl(false);
     }
   };
@@ -428,7 +436,7 @@ const App: React.FC = () => {
                 type="text" 
                 value={urlInput}
                 onChange={(e) => setUrlInput(e.target.value)}
-                placeholder="Paste URL (mp3, wav...)"
+                placeholder="Paste Link (Audio/Video...)"
                 disabled={isRecording}
                 className="bg-transparent text-xs md:text-sm px-2 md:px-3 py-1 outline-none flex-1 w-full text-slate-700 disabled:opacity-50"
               />
@@ -445,7 +453,7 @@ const App: React.FC = () => {
             {/* File Upload */}
             <input 
               type="file" 
-              accept="audio/*,.mp3,.wav,.aac,.ogg,.flac,.m4a,.aiff,.webm" 
+              accept="audio/*,video/*,.mp3,.wav,.aac,.ogg,.flac,.m4a,.aiff,.webm,.mp4,.mov,.avi,.mkv" 
               className="hidden" 
               ref={fileInputRef} 
               onChange={handleFileUpload} 
@@ -456,7 +464,7 @@ const App: React.FC = () => {
               disabled={isRecording}
               className={`px-3 md:px-4 py-2 text-xs md:text-sm font-semibold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 shadow-sm transition-all whitespace-nowrap ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
-              {audioFile ? 'Change File' : 'Upload File'}
+              {audioFile ? 'Change File' : 'Upload Audio/Video'}
             </button>
             
             {/* Record */}
@@ -585,11 +593,11 @@ const App: React.FC = () => {
 
           </div>
 
-          {/* Audio Player Row */}
+          {/* Audio/Video Player Row */}
           {audioFile && (
             <div className="pt-2 border-t border-slate-100 flex flex-col md:flex-row md:items-center gap-2 md:gap-4 w-full">
               <span className="text-[10px] md:text-xs font-bold text-slate-500 truncate max-w-full md:max-w-xs bg-slate-50 px-2 py-1 rounded">
-                Playing: {audioFile.fileName}
+                Media: {audioFile.fileName}
               </span>
               <audio
                 ref={audioRef}
@@ -700,7 +708,7 @@ const App: React.FC = () => {
                   ) : (
                     <div className="h-full flex flex-col items-center justify-center p-8 text-center opacity-25">
                       <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg>
-                      <p className="mt-4 text-[10px] md:text-xs font-black uppercase tracking-widest">Awaiting Audio</p>
+                      <p className="mt-4 text-[10px] md:text-xs font-black uppercase tracking-widest">Awaiting Media</p>
                     </div>
                   )}
                 </div>
