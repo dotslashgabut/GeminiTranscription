@@ -78,19 +78,37 @@ const SegmentItem: React.FC<SegmentItemProps> = ({ segment, isActive, isManualSe
       const audioData = await generateSpeech(segment.translatedText, targetLanguage);
       if (!audioData) throw new Error("No audio data");
 
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      // Check if it's a URL (Google Translate) or Base64 (Legacy/Gemini)
+      if (audioData.startsWith('http')) {
+        const audio = new Audio(audioData);
+        
+        audio.onended = () => {
+          setIsSpeaking(false);
+        };
+        
+        audio.onerror = (e) => {
+          console.error("Audio playback error", e);
+          setIsSpeaking(false);
+          alert("Could not play audio. The text might be too long for the free TTS service.");
+        };
+
+        await audio.play();
+      } else {
+        // Fallback for Base64 (if switched back to Model TTS)
+        if (!audioContextRef.current) {
+          audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+        }
+        
+        const ctx = audioContextRef.current;
+        const decodedBytes = decodeBase64(audioData);
+        const audioBuffer = await decodeAudioData(decodedBytes, ctx, 24000, 1);
+        
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+        source.onended = () => setIsSpeaking(false);
+        source.start();
       }
-      
-      const ctx = audioContextRef.current;
-      const decodedBytes = decodeBase64(audioData);
-      const audioBuffer = await decodeAudioData(decodedBytes, ctx, 24000, 1);
-      
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(ctx.destination);
-      source.onended = () => setIsSpeaking(false);
-      source.start();
     } catch (error) {
       console.error("TTS error:", error);
       setIsSpeaking(false);
